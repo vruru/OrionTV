@@ -119,7 +119,7 @@ export default function PlayScreen() {
   const playbackAllFinished = usePlayerStore((s) => s.playbackAllFinished);
   // Preview-scrub state, drives on-demand thumbnail window generation.
   const isPreviewing = usePlayerStore((s) => s.isPreviewing);
-  const previewCursorMillis = usePlayerStore((s) => s.previewCursorMillis);
+  const previewWindowStartMillis = usePlayerStore((s) => s.previewWindowStartMillis);
 
   // 使用Video事件处理hook
   const { videoProps } = useVideoHandlers({
@@ -169,24 +169,16 @@ export default function PlayScreen() {
     }
   }, [currentEpisode?.url, durationMillis]);
 
-  // While previewing, (re)generate the 6-frame window around the cursor.
-  // Debounced so fast scrubbing doesn't spawn a window per keypress.
+  // While previewing, (re)generate the 6-frame window whenever the window's
+  // start position changes (moving the selection within the window doesn't
+  // regenerate). Debounced so fast scrubbing doesn't spawn a window per keypress.
   useEffect(() => {
     if (!isPreviewing) return;
     const id = setTimeout(() => {
-      usePreviewStore.getState().generateWindow(previewCursorMillis);
+      usePreviewStore.getState().generateWindow(previewWindowStartMillis);
     }, 120);
     return () => clearTimeout(id);
-  }, [isPreviewing, previewCursorMillis]);
-
-  // Auto-exit preview after a period of inactivity (playback never stopped).
-  useEffect(() => {
-    if (!isPreviewing) return;
-    const id = setTimeout(() => {
-      usePlayerStore.getState().cancelPreview();
-    }, 8000);
-    return () => clearTimeout(id);
-  }, [isPreviewing, previewCursorMillis]);
+  }, [isPreviewing, previewWindowStartMillis]);
 
   // When the whole title has finished (last episode ended), go back to home.
   useEffect(() => {

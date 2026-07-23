@@ -5,6 +5,7 @@ import { RefObject } from "react";
 import { PlayRecord, PlayRecordManager, PlayerSettingsManager } from "@/services/storage";
 import useDetailStore, { episodesSelectorBySource } from "./detailStore";
 import { useSettingsStore } from "./settingsStore";
+import { PREVIEW_STEP_MS, PREVIEW_COUNT } from "./previewStore";
 import Logger from '@/utils/Logger';
 
 const logger = Logger.withTag('PlayerStore');
@@ -28,10 +29,13 @@ interface PlayerState {
   // True once the last episode of the current title has finished playing;
   // the play screen watches this to return to the home page automatically.
   playbackAllFinished: boolean;
-  // Preview-scrub mode: a non-committing cursor used to browse thumbnails while
-  // playback keeps running. Seeking is only applied when the user confirms.
+  // Preview-scrub mode: a non-committing selection used to browse a strip of
+  // thumbnails while playback keeps running. Seeking is only applied on confirm.
+  // The strip shows PREVIEW_COUNT frames starting at previewWindowStartMillis
+  // (spaced PREVIEW_STEP_MS); previewSelectedIndex highlights the chosen frame.
   isPreviewing: boolean;
-  previewCursorMillis: number;
+  previewWindowStartMillis: number;
+  previewSelectedIndex: number;
   isSeeking: boolean;
   seekPosition: number;
   progressPosition: number;
@@ -58,7 +62,7 @@ interface PlayerState {
   setShowSpeedModal: (show: boolean) => void;
   setShowNextEpisodeOverlay: (show: boolean) => void;
   enterPreview: () => void;
-  movePreviewCursor: (deltaMs: number) => void;
+  movePreviewSelection: (delta: number) => void;
   commitPreview: () => void;
   cancelPreview: () => void;
   setPlaybackRate: (rate: number) => void;
@@ -85,7 +89,8 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   showNextEpisodeOverlay: false,
   playbackAllFinished: false,
   isPreviewing: false,
-  previewCursorMillis: 0,
+  previewWindowStartMillis: 0,
+  previewSelectedIndex: 0,
   isSeeking: false,
   seekPosition: 0,
   progressPosition: 0,
@@ -463,28 +468,48 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     const { status, isPreviewing } = get();
     if (isPreviewing) return;
     const pos = status?.isLoaded ? status.positionMillis : 0;
-    set({ isPreviewing: true, previewCursorMillis: pos });
+    // Start the window at the current playback position, selecting the first cell.
+    set({ isPreviewing: true, previewWindowStartMillis: pos, previewSelectedIndex: 0 });
   },
 
-  movePreviewCursor: (deltaMs) => {
-    const { status, previewCursorMillis, isPreviewing } = get();
+  movePreviewSelection: (delta) => {
+    const { status, previewWindowStartMillis, previewSelectedIndex, isPreviewing } = get();
     if (!isPreviewing) return;
     const duration = status?.isLoaded ? status.durationMillis || 0 : 0;
-    let next = previewCursorMillis + deltaMs;
-    if (next < 0) next = 0;
-    if (duration > 0 && next > duration - 1000) next = Math.max(0, duration - 1000);
-    set({ previewCursorMillis: next });
+    const maxStart = duration > 0 ? Math.max(0, duration - 1000) : Number.MAX_SAFE_INTEGER;
+
+    let idx = previewSelectedIndex + delta;
+    let start = previewWindowStartMillis;
+
+    if (idx > PREVIEW_COUNT - 1) {
+      // Past the right edge: slide the whole window forward by one step.
+      start = Math.min(start + PREVIEW_STEP_MS, maxStart);
+      idx = PREVIEW_COUNT - 1;
+    } else if (idx < 0) {
+      // Past the left edge: slide the window backward by one step.
+      start = Math.max(0, start - PREVIEW_STEP_MS);
+      idx = 0;
+    }
+
+    // Don't let the selected frame go past the end of the video.
+    if (duration > 0) {
+      const maxIdx = Math.max(0, Math.min(PREVIEW_COUNT - 1, Math.floor((maxStart - start) / PREVIEW_STEP_MS)));
+      if (idx > maxIdx) idx = maxIdx;
+    }
+
+    set({ previewWindowStartMillis: start, previewSelectedIndex: idx });
   },
 
   commitPreview: async () => {
-    const { videoRef, previewCursorMillis, isPreviewing, status } = get();
+    const { videoRef, previewWindowStartMillis, previewSelectedIndex, isPreviewing, status } = get();
     if (!isPreviewing) return;
     set({ isPreviewing: false });
+    const target = previewWindowStartMillis + previewSelectedIndex * PREVIEW_STEP_MS;
     try {
-      await videoRef?.current?.setPositionAsync(previewCursorMillis);
+      await videoRef?.current?.setPositionAsync(target);
       const duration = status?.isLoaded ? status.durationMillis || 0 : 0;
       if (duration > 0) {
-        set({ progressPosition: previewCursorMillis / duration });
+        set({ progressPosition: target / duration });
       }
     } catch (error) {
       logger.debug("Failed to seek on preview commit:", error);
@@ -523,7 +548,8 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       showNextEpisodeOverlay: false,
       playbackAllFinished: false,
       isPreviewing: false,
-      previewCursorMillis: 0,
+      previewWindowStartMillis: 0,
+      previewSelectedIndex: 0,
       initialPosition: 0,
       playbackRate: 1.0,
       introEndTime: undefined,

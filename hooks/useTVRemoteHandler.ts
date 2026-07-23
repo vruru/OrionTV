@@ -1,10 +1,6 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useTVEventHandler, HWEvent } from "react-native";
 import usePlayerStore from "@/stores/playerStore";
-import { PREVIEW_STEP_MS } from "@/stores/previewStore";
-
-// 预览游标每次移动的步长（毫秒）——与预览缩略图间隔一致(5秒)
-const PREVIEW_CURSOR_STEP = PREVIEW_STEP_MS;
 
 // 定时器延迟时间（毫秒）
 const CONTROLS_TIMEOUT = 5000;
@@ -20,7 +16,7 @@ export const useTVRemoteHandler = () => {
     showEpisodeModal,
     togglePlayPause,
     enterPreview,
-    movePreviewCursor,
+    movePreviewSelection,
     commitPreview,
   } = usePlayerStore();
 
@@ -104,34 +100,34 @@ export const useTVRemoteHandler = () => {
           }
           break;
         case "left":
-          // 左键：进入/移动预览游标（不影响正在进行的播放）
+          // 左键：进入预览 / 在预览中把选中框左移一格（不影响正在进行的播放）
           if (!isPreviewing) {
             enterPreview();
           } else {
-            movePreviewCursor(-PREVIEW_CURSOR_STEP);
+            movePreviewSelection(-1);
           }
           break;
         case "right":
           if (!isPreviewing) {
             enterPreview();
           } else {
-            movePreviewCursor(PREVIEW_CURSOR_STEP);
+            movePreviewSelection(1);
           }
           break;
         case "longLeft":
           if (!fastForwardIntervalRef.current && event.eventKeyAction === 0) {
             usePlayerStore.getState().enterPreview();
             fastForwardIntervalRef.current = setInterval(() => {
-              usePlayerStore.getState().movePreviewCursor(-PREVIEW_CURSOR_STEP);
-            }, 200);
+              usePlayerStore.getState().movePreviewSelection(-1);
+            }, 250);
           }
           break;
         case "longRight":
           if (!fastForwardIntervalRef.current && event.eventKeyAction === 0) {
             usePlayerStore.getState().enterPreview();
             fastForwardIntervalRef.current = setInterval(() => {
-              usePlayerStore.getState().movePreviewCursor(PREVIEW_CURSOR_STEP);
-            }, 200);
+              usePlayerStore.getState().movePreviewSelection(1);
+            }, 250);
           }
           break;
         case "down":
@@ -142,7 +138,7 @@ export const useTVRemoteHandler = () => {
           break;
       }
     },
-    [showControls, showEpisodeModal, setShowControls, resetTimer, togglePlayPause, enterPreview, movePreviewCursor, commitPreview]
+    [showControls, showEpisodeModal, setShowControls, resetTimer, togglePlayPause, enterPreview, movePreviewSelection, commitPreview]
   );
 
   useTVEventHandler(handleTVEvent);

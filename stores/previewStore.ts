@@ -5,7 +5,7 @@ import Logger from "@/utils/Logger";
 const logger = Logger.withTag("PreviewStore");
 
 export const PREVIEW_COUNT = 6; // number of thumbnails shown at once
-export const PREVIEW_STEP_MS = 5000; // spacing between thumbnails (5s)
+export const PREVIEW_STEP_MS = 10000; // spacing between thumbnails (10s)
 
 export interface PreviewFrame {
   time: number; // absolute position in ms

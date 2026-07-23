@@ -29,7 +29,7 @@ const formatTime = (milliseconds: number) => {
 // where a jump WOULD land if confirmed.
 export const SeekingBar = () => {
   const isPreviewing = usePlayerStore((s) => s.isPreviewing);
-  const previewCursorMillis = usePlayerStore((s) => s.previewCursorMillis);
+  const selectedIndex = usePlayerStore((s) => s.previewSelectedIndex);
   const status = usePlayerStore((s) => s.status);
   const frames = usePreviewStore((s) => s.frames);
 
@@ -39,14 +39,16 @@ export const SeekingBar = () => {
 
   const durationMillis = status.durationMillis || 0;
   const playedRatio = durationMillis > 0 ? status.positionMillis / durationMillis : 0;
-  const cursorRatio = durationMillis > 0 ? previewCursorMillis / durationMillis : 0;
+  // Time of the currently highlighted (selected) preview frame.
+  const selectedTime = frames[selectedIndex]?.time ?? frames[0]?.time ?? 0;
+  const cursorRatio = durationMillis > 0 ? selectedTime / durationMillis : 0;
 
   return (
     <View style={styles.container} pointerEvents="none">
       {/* Thumbnail strip */}
       <View style={styles.strip}>
         {frames.map((frame, index) => {
-          const isCursor = index === 0; // leftmost frame == the jump target
+          const isCursor = index === selectedIndex; // highlighted == the jump target
           return (
             <View key={`${frame.time}-${index}`} style={[styles.cell, isCursor && styles.cellActive]}>
               {frame.uri ? (
@@ -64,11 +66,11 @@ export const SeekingBar = () => {
         })}
       </View>
 
-      {/* Cursor time + hint */}
+      {/* Selected time + hint */}
       <Text style={styles.cursorTime}>
-        {formatTime(previewCursorMillis)} / {formatTime(durationMillis)}
+        {formatTime(selectedTime)} / {formatTime(durationMillis)}
       </Text>
-      <Text style={styles.hint}>确认键跳转到此处 · 返回键继续播放</Text>
+      <Text style={styles.hint}>左右键选择画面 · 确认键跳转 · 返回键继续播放</Text>
 
       {/* Progress bar: real playback position + preview cursor marker */}
       <View style={styles.barContainer}>
