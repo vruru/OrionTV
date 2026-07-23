@@ -28,6 +28,10 @@ interface PlayerState {
   // True once the last episode of the current title has finished playing;
   // the play screen watches this to return to the home page automatically.
   playbackAllFinished: boolean;
+  // Preview-scrub mode: a non-committing cursor used to browse thumbnails while
+  // playback keeps running. Seeking is only applied when the user confirms.
+  isPreviewing: boolean;
+  previewCursorMillis: number;
   isSeeking: boolean;
   seekPosition: number;
   progressPosition: number;
@@ -53,6 +57,10 @@ interface PlayerState {
   setShowSourceModal: (show: boolean) => void;
   setShowSpeedModal: (show: boolean) => void;
   setShowNextEpisodeOverlay: (show: boolean) => void;
+  enterPreview: () => void;
+  movePreviewCursor: (deltaMs: number) => void;
+  commitPreview: () => void;
+  cancelPreview: () => void;
   setPlaybackRate: (rate: number) => void;
   setIntroEndTime: () => void;
   setOutroStartTime: () => void;
@@ -76,6 +84,8 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   showSpeedModal: false,
   showNextEpisodeOverlay: false,
   playbackAllFinished: false,
+  isPreviewing: false,
+  previewCursorMillis: 0,
   isSeeking: false,
   seekPosition: 0,
   progressPosition: 0,
@@ -449,6 +459,40 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   setShowSpeedModal: (show) => set({ showSpeedModal: show }),
   setShowNextEpisodeOverlay: (show) => set({ showNextEpisodeOverlay: show }),
 
+  enterPreview: () => {
+    const { status, isPreviewing } = get();
+    if (isPreviewing) return;
+    const pos = status?.isLoaded ? status.positionMillis : 0;
+    set({ isPreviewing: true, previewCursorMillis: pos });
+  },
+
+  movePreviewCursor: (deltaMs) => {
+    const { status, previewCursorMillis, isPreviewing } = get();
+    if (!isPreviewing) return;
+    const duration = status?.isLoaded ? status.durationMillis || 0 : 0;
+    let next = previewCursorMillis + deltaMs;
+    if (next < 0) next = 0;
+    if (duration > 0 && next > duration - 1000) next = Math.max(0, duration - 1000);
+    set({ previewCursorMillis: next });
+  },
+
+  commitPreview: async () => {
+    const { videoRef, previewCursorMillis, isPreviewing, status } = get();
+    if (!isPreviewing) return;
+    set({ isPreviewing: false });
+    try {
+      await videoRef?.current?.setPositionAsync(previewCursorMillis);
+      const duration = status?.isLoaded ? status.durationMillis || 0 : 0;
+      if (duration > 0) {
+        set({ progressPosition: previewCursorMillis / duration });
+      }
+    } catch (error) {
+      logger.debug("Failed to seek on preview commit:", error);
+    }
+  },
+
+  cancelPreview: () => set({ isPreviewing: false }),
+
   setPlaybackRate: async (rate) => {
     const { videoRef } = get();
     const detail = useDetailStore.getState().detail;
@@ -478,6 +522,8 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       showSpeedModal: false,
       showNextEpisodeOverlay: false,
       playbackAllFinished: false,
+      isPreviewing: false,
+      previewCursorMillis: 0,
       initialPosition: 0,
       playbackRate: 1.0,
       introEndTime: undefined,

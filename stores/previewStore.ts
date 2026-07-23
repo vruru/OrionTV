@@ -1,115 +1,95 @@
 import { create } from "zustand";
-import * as VideoThumbnails from "expo-video-thumbnails";
+import { generateThumbnail } from "@/services/thumbnailGen";
 import Logger from "@/utils/Logger";
 
 const logger = Logger.withTag("PreviewStore");
 
-export interface PreviewThumbnail {
-  /** Timestamp of the frame, in milliseconds. */
-  time: number;
-  /** Local file uri of the generated thumbnail. */
-  uri: string;
+export const PREVIEW_COUNT = 6; // number of thumbnails shown at once
+export const PREVIEW_STEP_MS = 5000; // spacing between thumbnails (5s)
+
+export interface PreviewFrame {
+  time: number; // absolute position in ms
+  uri: string | null; // local image uri, or null while loading / unsupported
 }
 
-type PreviewStatus = "idle" | "generating" | "ready" | "unavailable";
-
-// Tuning: how many thumbnails to spread across the timeline and how the probing
-// backs off. Generating frames from remote streams is expensive, so we cap the
-// count and bail out early if the source clearly does not support extraction
-// (common with some HLS/m3u8 streams on Android).
-const MAX_THUMBNAILS = 40;
-const MIN_THUMBNAILS = 6;
-const THUMBNAIL_INTERVAL_MS = 30 * 1000; // aim for ~1 frame / 30s
-const EARLY_FAILURE_ABORT = 3; // give up if the first few frames all fail
-
 interface PreviewState {
-  thumbnails: PreviewThumbnail[]; // sorted by time ascending
-  status: PreviewStatus;
   sourceUrl: string | null;
-  /** Kick off background generation for the given source/duration (idempotent per url). */
-  generate: (url: string, durationMillis: number) => Promise<void>;
-  /** Nearest cached thumbnail for a position (ms), or null if none available. */
-  getNearest: (positionMillis: number) => PreviewThumbnail | null;
+  durationMillis: number;
+  frames: PreviewFrame[]; // current window, ordered by time
+  // Cache of already-extracted thumbnails, keyed by rounded time (ms).
+  cache: Record<number, string>;
+  // Monotonic token so stale async results from an older window are ignored.
+  requestToken: number;
+  setSource: (url: string | null, durationMillis: number) => void;
+  /** Build the 6-frame window starting at startMillis and fill images on demand. */
+  generateWindow: (startMillis: number) => void;
   reset: () => void;
 }
 
+const roundKey = (ms: number) => Math.round(ms / 1000) * 1000;
+
 const usePreviewStore = create<PreviewState>((set, get) => ({
-  thumbnails: [],
-  status: "idle",
   sourceUrl: null,
+  durationMillis: 0,
+  frames: [],
+  cache: {},
+  requestToken: 0,
 
-  generate: async (url, durationMillis) => {
-    if (!url || !durationMillis || durationMillis <= 0) return;
-    // Already handled this source (or in progress) — nothing to do.
-    if (get().sourceUrl === url && get().status !== "idle") return;
+  setSource: (url, durationMillis) => {
+    if (get().sourceUrl === url) {
+      // Same source, just refresh duration.
+      set({ durationMillis });
+      return;
+    }
+    // New source -> drop cache and window.
+    set({ sourceUrl: url, durationMillis, frames: [], cache: {}, requestToken: get().requestToken + 1 });
+  },
 
-    set({ sourceUrl: url, status: "generating", thumbnails: [] });
+  generateWindow: (startMillis) => {
+    const { sourceUrl, durationMillis, cache } = get();
+    if (!sourceUrl) return;
 
-    const count = Math.min(
-      MAX_THUMBNAILS,
-      Math.max(MIN_THUMBNAILS, Math.floor(durationMillis / THUMBNAIL_INTERVAL_MS))
-    );
-    const step = durationMillis / (count + 1);
+    const maxStart = durationMillis > 0 ? Math.max(0, durationMillis - 1000) : Number.MAX_SAFE_INTEGER;
+    const base = Math.min(Math.max(0, startMillis), maxStart);
 
-    logger.info(`[PREVIEW] Generating ${count} thumbnails for duration ${durationMillis}ms`);
+    // Compute the target times for this window.
+    const times: number[] = [];
+    for (let i = 0; i < PREVIEW_COUNT; i++) {
+      const t = base + i * PREVIEW_STEP_MS;
+      if (durationMillis > 0 && t >= durationMillis) break;
+      times.push(t);
+    }
+    if (times.length === 0) times.push(base);
 
-    let failures = 0;
-    for (let i = 1; i <= count; i++) {
-      // Source changed (episode/source switch or unmount) — stop quietly.
-      if (get().sourceUrl !== url) {
-        logger.info(`[PREVIEW] Source changed, aborting generation`);
-        return;
-      }
+    const token = get().requestToken + 1;
+    set({
+      requestToken: token,
+      frames: times.map((t) => ({ time: t, uri: cache[roundKey(t)] ?? null })),
+    });
 
-      const time = Math.floor(step * i);
-      try {
-        const { uri } = await VideoThumbnails.getThumbnailAsync(url, {
-          time,
-          quality: 0.5,
-        });
+    // Fill missing frames sequentially (limits native/network pressure and
+    // never blocks playback, which runs on its own player).
+    (async () => {
+      for (let i = 0; i < times.length; i++) {
+        if (get().requestToken !== token) return; // a newer window superseded us
+        const t = times[i];
+        const key = roundKey(t);
+        if (get().cache[key]) continue; // already have it
 
-        if (get().sourceUrl !== url) return; // re-check after await
-        set((state) => ({
-          thumbnails: [...state.thumbnails, { time, uri }].sort((a, b) => a.time - b.time),
-        }));
-      } catch (error) {
-        failures++;
-        logger.info(`[PREVIEW] Failed to extract frame at ${time}ms (failure ${failures})`, error);
-        // If extraction fails right away, this source almost certainly does not
-        // support on-device thumbnails — stop and fall back to time-only preview.
-        if (i <= EARLY_FAILURE_ABORT && failures >= EARLY_FAILURE_ABORT) {
-          logger.warn(`[PREVIEW] Source does not support thumbnail extraction, marking unavailable`);
-          if (get().sourceUrl === url) {
-            set({ status: "unavailable" });
-          }
-          return;
+        const uri = await generateThumbnail(sourceUrl, t);
+        if (get().requestToken !== token) return;
+        if (uri) {
+          set((state) => ({
+            cache: { ...state.cache, [key]: uri },
+            frames: state.frames.map((f) => (f.time === t ? { ...f, uri } : f)),
+          }));
         }
       }
-    }
-
-    if (get().sourceUrl === url) {
-      set({ status: get().thumbnails.length > 0 ? "ready" : "unavailable" });
-      logger.info(`[PREVIEW] Generation complete: ${get().thumbnails.length} thumbnails`);
-    }
+      logger.info(`[PREVIEW] window @${base}ms done`);
+    })();
   },
 
-  getNearest: (positionMillis) => {
-    const { thumbnails } = get();
-    if (thumbnails.length === 0) return null;
-
-    let nearest = thumbnails[0];
-    let bestDelta = Math.abs(thumbnails[0].time - positionMillis);
-    for (let i = 1; i < thumbnails.length; i++) {
-      const delta = Math.abs(thumbnails[i].time - positionMillis);
-      if (delta < bestDelta) {
-        bestDelta = delta;
-        nearest = thumbnails[i];
-      }
-    }
-    return nearest;
-  },
-
-  reset: () => set({ thumbnails: [], status: "idle", sourceUrl: null }),
+  reset: () => set({ sourceUrl: null, durationMillis: 0, frames: [], cache: {}, requestToken: get().requestToken + 1 }),
 }));
 
 export default usePreviewStore;

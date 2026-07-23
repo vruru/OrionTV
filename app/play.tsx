@@ -113,11 +113,13 @@ export default function PlayScreen() {
     loadVideo,
   } = usePlayerStore();
   const currentEpisode = usePlayerStore(selectCurrentEpisode);
-  // Duration of the currently loaded video (stable once loaded); used to
-  // pre-generate seek-preview thumbnails across the timeline.
+  // Duration of the currently loaded video (stable once loaded).
   const durationMillis = usePlayerStore((s) => (s.status?.isLoaded ? s.status.durationMillis : undefined));
   // Set to true once the final episode finishes -> return to home.
   const playbackAllFinished = usePlayerStore((s) => s.playbackAllFinished);
+  // Preview-scrub state, drives on-demand thumbnail window generation.
+  const isPreviewing = usePlayerStore((s) => s.isPreviewing);
+  const previewCursorMillis = usePlayerStore((s) => s.previewCursorMillis);
 
   // 使用Video事件处理hook
   const { videoProps } = useVideoHandlers({
@@ -159,14 +161,32 @@ export default function PlayScreen() {
     };
   }, [episodeIndex, source, position, setVideoRef, reset, loadVideo, id, title]);
 
-  // Pre-generate seek-preview thumbnails once the video is loaded and its
-  // duration is known. Generation is idempotent per source url, so switching
-  // episodes automatically regenerates for the new stream.
+  // Tell the preview store which stream/duration to use (per episode). Thumbnails
+  // are only generated on demand while previewing, not up front.
   useEffect(() => {
-    if (currentEpisode?.url && durationMillis && durationMillis > 0) {
-      usePreviewStore.getState().generate(currentEpisode.url, durationMillis);
+    if (currentEpisode?.url) {
+      usePreviewStore.getState().setSource(currentEpisode.url, durationMillis || 0);
     }
   }, [currentEpisode?.url, durationMillis]);
+
+  // While previewing, (re)generate the 6-frame window around the cursor.
+  // Debounced so fast scrubbing doesn't spawn a window per keypress.
+  useEffect(() => {
+    if (!isPreviewing) return;
+    const id = setTimeout(() => {
+      usePreviewStore.getState().generateWindow(previewCursorMillis);
+    }, 120);
+    return () => clearTimeout(id);
+  }, [isPreviewing, previewCursorMillis]);
+
+  // Auto-exit preview after a period of inactivity (playback never stopped).
+  useEffect(() => {
+    if (!isPreviewing) return;
+    const id = setTimeout(() => {
+      usePlayerStore.getState().cancelPreview();
+    }, 8000);
+    return () => clearTimeout(id);
+  }, [isPreviewing, previewCursorMillis]);
 
   // When the whole title has finished (last episode ended), go back to home.
   useEffect(() => {
@@ -201,6 +221,11 @@ export default function PlayScreen() {
 
   useEffect(() => {
     const backAction = () => {
+      // 预览状态下按返回键：仅退出预览，继续正常播放（不改变进度）
+      if (usePlayerStore.getState().isPreviewing) {
+        usePlayerStore.getState().cancelPreview();
+        return true;
+      }
       if (showControls) {
         setShowControls(false);
         return true;

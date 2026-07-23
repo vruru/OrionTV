@@ -1,8 +1,10 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useTVEventHandler, HWEvent } from "react-native";
 import usePlayerStore from "@/stores/playerStore";
+import { PREVIEW_STEP_MS } from "@/stores/previewStore";
 
-const SEEK_STEP = 20 * 1000; // 快进/快退的时间步长（毫秒）
+// 预览游标每次移动的步长（毫秒）——与预览缩略图间隔一致(5秒)
+const PREVIEW_CURSOR_STEP = PREVIEW_STEP_MS;
 
 // 定时器延迟时间（毫秒）
 const CONTROLS_TIMEOUT = 5000;
@@ -12,7 +14,15 @@ const CONTROLS_TIMEOUT = 5000;
  * @returns onScreenPress - 一个函数，用于处理屏幕点击事件，以显示控件并重置定时器。
  */
 export const useTVRemoteHandler = () => {
-  const { showControls, setShowControls, showEpisodeModal, togglePlayPause, seek } = usePlayerStore();
+  const {
+    showControls,
+    setShowControls,
+    showEpisodeModal,
+    togglePlayPause,
+    enterPreview,
+    movePreviewCursor,
+    commitPreview,
+  } = usePlayerStore();
 
   const controlsTimer = useRef<NodeJS.Timeout | null>(null);
   const fastForwardIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -73,46 +83,66 @@ export const useTVRemoteHandler = () => {
         }
       }
 
-      resetTimer();
-
       if (showControls) {
         // 如果控制条已显示，则不处理后台的快进/快退等操作
         // 避免与控制条上的按钮焦点冲突
+        resetTimer();
         return;
       }
 
+      const { isPreviewing } = usePlayerStore.getState();
+
       switch (event.eventType) {
         case "select":
-          togglePlayPause();
-          setShowControls(true);
+          if (isPreviewing) {
+            // 在预览状态下按确认键：跳转到预览游标所在进度
+            commitPreview();
+          } else {
+            togglePlayPause();
+            setShowControls(true);
+            resetTimer();
+          }
           break;
         case "left":
-          seek(-SEEK_STEP); // 快退15秒
-          break;
-        case "longLeft":
-          if (!fastForwardIntervalRef.current && event.eventKeyAction === 0) {
-            fastForwardIntervalRef.current = setInterval(() => {
-              seek(-SEEK_STEP); 
-            }, 200);
+          // 左键：进入/移动预览游标（不影响正在进行的播放）
+          if (!isPreviewing) {
+            enterPreview();
+          } else {
+            movePreviewCursor(-PREVIEW_CURSOR_STEP);
           }
           break;
         case "right":
-          seek(SEEK_STEP);
+          if (!isPreviewing) {
+            enterPreview();
+          } else {
+            movePreviewCursor(PREVIEW_CURSOR_STEP);
+          }
+          break;
+        case "longLeft":
+          if (!fastForwardIntervalRef.current && event.eventKeyAction === 0) {
+            usePlayerStore.getState().enterPreview();
+            fastForwardIntervalRef.current = setInterval(() => {
+              usePlayerStore.getState().movePreviewCursor(-PREVIEW_CURSOR_STEP);
+            }, 200);
+          }
           break;
         case "longRight":
-          // 长按开始: 启动连续快进
           if (!fastForwardIntervalRef.current && event.eventKeyAction === 0) {
+            usePlayerStore.getState().enterPreview();
             fastForwardIntervalRef.current = setInterval(() => {
-              seek(SEEK_STEP); 
+              usePlayerStore.getState().movePreviewCursor(PREVIEW_CURSOR_STEP);
             }, 200);
           }
           break;
         case "down":
-          setShowControls(true);
+          if (!isPreviewing) {
+            setShowControls(true);
+            resetTimer();
+          }
           break;
       }
     },
-    [showControls, showEpisodeModal, setShowControls, resetTimer, togglePlayPause, seek]
+    [showControls, showEpisodeModal, setShowControls, resetTimer, togglePlayPause, enterPreview, movePreviewCursor, commitPreview]
   );
 
   useTVEventHandler(handleTVEvent);

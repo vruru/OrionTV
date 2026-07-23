@@ -1,10 +1,11 @@
-import React, { useState } from "react";
-import { View, StyleSheet, Text, Image, LayoutChangeEvent } from "react-native";
+import React from "react";
+import { View, StyleSheet, Text, Image, ActivityIndicator } from "react-native";
 import usePlayerStore from "@/stores/playerStore";
 import usePreviewStore from "@/stores/previewStore";
+import { Colors } from "@/constants/Colors";
 
-const PREVIEW_WIDTH = 176;
-const PREVIEW_HEIGHT = 99; // 16:9
+const CELL_WIDTH = 150;
+const CELL_HEIGHT = 84; // ~16:9
 
 const formatTime = (milliseconds: number) => {
   if (isNaN(milliseconds) || milliseconds < 0) {
@@ -23,152 +24,117 @@ const formatTime = (milliseconds: number) => {
   return `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
 };
 
+// Shows a strip of preview thumbnails (5s apart, starting at the cursor) while
+// the user scrubs. Playback continues in the background; the strip only reflects
+// where a jump WOULD land if confirmed.
 export const SeekingBar = () => {
-  const { isSeeking, seekPosition, status } = usePlayerStore();
-  const thumbnails = usePreviewStore((s) => s.thumbnails);
-  const getNearest = usePreviewStore((s) => s.getNearest);
-  const [barWidth, setBarWidth] = useState(0);
+  const isPreviewing = usePlayerStore((s) => s.isPreviewing);
+  const previewCursorMillis = usePlayerStore((s) => s.previewCursorMillis);
+  const status = usePlayerStore((s) => s.status);
+  const frames = usePreviewStore((s) => s.frames);
 
-  const onBarLayout = (e: LayoutChangeEvent) => {
-    setBarWidth(e.nativeEvent.layout.width);
-  };
-
-  if (!isSeeking || !status?.isLoaded) {
+  if (!isPreviewing || !status?.isLoaded) {
     return null;
   }
 
   const durationMillis = status.durationMillis || 0;
-  const currentPositionMillis = seekPosition * durationMillis;
-
-  // Nearest pre-generated thumbnail for the current seek position.
-  const nearest = thumbnails.length > 0 ? getNearest(currentPositionMillis) : null;
-
-  // Horizontal position of the preview window, centered on the seek point and
-  // clamped so it never overflows the bar edges.
-  let previewLeft = seekPosition * barWidth - PREVIEW_WIDTH / 2;
-  if (barWidth > 0) {
-    previewLeft = Math.max(0, Math.min(previewLeft, barWidth - PREVIEW_WIDTH));
-  }
+  const playedRatio = durationMillis > 0 ? status.positionMillis / durationMillis : 0;
+  const cursorRatio = durationMillis > 0 ? previewCursorMillis / durationMillis : 0;
 
   return (
-    <View style={styles.seekingContainer}>
-      <View style={styles.barArea} onLayout={onBarLayout}>
-        {/* Preview window that follows the seek point */}
-        {barWidth > 0 && (
-          <View style={[styles.previewWindow, { left: previewLeft }]}>
-            {nearest ? (
-              <>
-                <Image source={{ uri: nearest.uri }} style={styles.previewImage} resizeMode="cover" />
-                <View style={styles.previewTimeOverlay}>
-                  <Text style={styles.previewTimeText}>{formatTime(currentPositionMillis)}</Text>
+    <View style={styles.container} pointerEvents="none">
+      {/* Thumbnail strip */}
+      <View style={styles.strip}>
+        {frames.map((frame, index) => {
+          const isCursor = index === 0; // leftmost frame == the jump target
+          return (
+            <View key={`${frame.time}-${index}`} style={[styles.cell, isCursor && styles.cellActive]}>
+              {frame.uri ? (
+                <Image source={{ uri: frame.uri }} style={styles.cellImage} resizeMode="cover" />
+              ) : (
+                <View style={styles.cellPlaceholder}>
+                  <ActivityIndicator size="small" color="#888" />
                 </View>
-              </>
-            ) : (
-              // Fallback when thumbnails are unavailable (e.g. some HLS sources)
-              <View style={styles.previewFallback}>
-                <Text style={styles.previewFallbackTime}>{formatTime(currentPositionMillis)}</Text>
-                <Text style={styles.previewFallbackDuration}>/ {formatTime(durationMillis)}</Text>
+              )}
+              <View style={styles.cellTimeOverlay}>
+                <Text style={styles.cellTimeText}>{formatTime(frame.time)}</Text>
               </View>
-            )}
-            {/* small pointer under the window */}
-            <View style={styles.previewPointer} />
-          </View>
-        )}
-
-        {/* The seek progress bar itself */}
-        <View style={styles.seekingBarContainer}>
-          <View style={styles.seekingBarBackground} />
-          <View style={[styles.seekingBarFilled, { width: `${seekPosition * 100}%` }]} />
-          {/* seek handle */}
-          <View style={[styles.seekHandle, { left: `${seekPosition * 100}%` }]} />
-        </View>
+            </View>
+          );
+        })}
       </View>
 
-      {/* Overall time readout under the bar */}
-      <Text style={styles.timeText}>
-        {formatTime(currentPositionMillis)} / {formatTime(durationMillis)}
+      {/* Cursor time + hint */}
+      <Text style={styles.cursorTime}>
+        {formatTime(previewCursorMillis)} / {formatTime(durationMillis)}
       </Text>
+      <Text style={styles.hint}>确认键跳转到此处 · 返回键继续播放</Text>
+
+      {/* Progress bar: real playback position + preview cursor marker */}
+      <View style={styles.barContainer}>
+        <View style={styles.barBackground} />
+        <View style={[styles.barPlayed, { width: `${Math.min(100, Math.max(0, playedRatio * 100))}%` }]} />
+        <View style={[styles.cursorMarker, { left: `${Math.min(100, Math.max(0, cursorRatio * 100))}%` }]} />
+      </View>
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  seekingContainer: {
+  container: {
     position: "absolute",
-    bottom: 80,
-    left: "5%",
-    right: "5%",
+    bottom: 60,
+    left: "4%",
+    right: "4%",
     alignItems: "center",
   },
-  barArea: {
-    width: "100%",
-    // Leave vertical room above the bar for the floating preview window.
-    paddingTop: PREVIEW_HEIGHT + 24,
-    justifyContent: "flex-end",
+  strip: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    flexWrap: "nowrap",
   },
-  previewWindow: {
-    position: "absolute",
-    top: 0,
-    width: PREVIEW_WIDTH,
-    height: PREVIEW_HEIGHT,
-    borderRadius: 8,
+  cell: {
+    width: CELL_WIDTH,
+    height: CELL_HEIGHT,
+    marginHorizontal: 4,
+    borderRadius: 6,
     borderWidth: 2,
-    borderColor: "rgba(255,255,255,0.9)",
+    borderColor: "rgba(255,255,255,0.25)",
     backgroundColor: "#000",
-    overflow: "visible",
+    overflow: "hidden",
   },
-  previewImage: {
+  cellActive: {
+    borderColor: Colors.dark.primary,
+    transform: [{ scale: 1.08 }],
+  },
+  cellImage: {
     width: "100%",
     height: "100%",
-    borderRadius: 6,
     backgroundColor: "#111",
   },
-  previewTimeOverlay: {
+  cellPlaceholder: {
+    width: "100%",
+    height: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#1a1a1a",
+  },
+  cellTimeOverlay: {
     position: "absolute",
     bottom: 0,
     left: 0,
     right: 0,
     backgroundColor: "rgba(0,0,0,0.6)",
     alignItems: "center",
-    paddingVertical: 2,
-    borderBottomLeftRadius: 6,
-    borderBottomRightRadius: 6,
+    paddingVertical: 1,
   },
-  previewTimeText: {
+  cellTimeText: {
     color: "white",
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: "bold",
   },
-  previewFallback: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 6,
-  },
-  previewFallbackTime: {
-    color: "white",
-    fontSize: 22,
-    fontWeight: "bold",
-  },
-  previewFallbackDuration: {
-    color: "#bbb",
-    fontSize: 13,
-    marginTop: 2,
-  },
-  previewPointer: {
-    position: "absolute",
-    bottom: -8,
-    left: PREVIEW_WIDTH / 2 - 6,
-    width: 0,
-    height: 0,
-    borderLeftWidth: 6,
-    borderRightWidth: 6,
-    borderTopWidth: 8,
-    borderLeftColor: "transparent",
-    borderRightColor: "transparent",
-    borderTopColor: "rgba(255,255,255,0.9)",
-  },
-  timeText: {
+  cursorTime: {
     color: "white",
     fontSize: 18,
     fontWeight: "bold",
@@ -176,31 +142,39 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 8,
-    marginTop: 12,
+    marginTop: 14,
   },
-  seekingBarContainer: {
+  hint: {
+    color: "#ccc",
+    fontSize: 13,
+    marginTop: 6,
+  },
+  barContainer: {
     width: "100%",
-    height: 5,
-    backgroundColor: "rgba(255, 255, 255, 0.3)",
-    borderRadius: 2.5,
+    height: 6,
+    marginTop: 12,
+    position: "relative",
+    justifyContent: "center",
   },
-  seekingBarBackground: {
+  barBackground: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(255, 255, 255, 0.3)",
-    borderRadius: 2.5,
+    backgroundColor: "rgba(255,255,255,0.3)",
+    borderRadius: 3,
   },
-  seekingBarFilled: {
-    height: "100%",
-    backgroundColor: "#fff",
-    borderRadius: 2.5,
-  },
-  seekHandle: {
+  barPlayed: {
     position: "absolute",
-    top: -4,
-    width: 13,
-    height: 13,
-    borderRadius: 6.5,
-    marginLeft: -6.5,
-    backgroundColor: "#fff",
+    left: 0,
+    height: 6,
+    backgroundColor: "rgba(255,255,255,0.7)",
+    borderRadius: 3,
+  },
+  cursorMarker: {
+    position: "absolute",
+    top: -5,
+    width: 4,
+    height: 16,
+    marginLeft: -2,
+    borderRadius: 2,
+    backgroundColor: Colors.dark.primary,
   },
 });
