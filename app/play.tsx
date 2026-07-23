@@ -15,6 +15,7 @@ import useDetailStore from "@/stores/detailStore";
 import { useTVRemoteHandler } from "@/hooks/useTVRemoteHandler";
 import Toast from "react-native-toast-message";
 import usePlayerStore, { selectCurrentEpisode } from "@/stores/playerStore";
+import usePreviewStore from "@/stores/previewStore";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { useVideoHandlers } from "@/hooks/useVideoHandlers";
 import Logger from '@/utils/Logger';
@@ -112,6 +113,9 @@ export default function PlayScreen() {
     loadVideo,
   } = usePlayerStore();
   const currentEpisode = usePlayerStore(selectCurrentEpisode);
+  // Duration of the currently loaded video (stable once loaded); used to
+  // pre-generate seek-preview thumbnails across the timeline.
+  const durationMillis = usePlayerStore((s) => (s.status?.isLoaded ? s.status.durationMillis : undefined));
 
   // 使用Video事件处理hook
   const { videoProps } = useVideoHandlers({
@@ -149,8 +153,18 @@ export default function PlayScreen() {
     return () => {
       logger.info(`[PERF] PlayScreen unmounting - calling reset()`);
       reset(); // Reset state when component unmounts
+      usePreviewStore.getState().reset(); // Clear cached seek-preview thumbnails
     };
   }, [episodeIndex, source, position, setVideoRef, reset, loadVideo, id, title]);
+
+  // Pre-generate seek-preview thumbnails once the video is loaded and its
+  // duration is known. Generation is idempotent per source url, so switching
+  // episodes automatically regenerates for the new stream.
+  useEffect(() => {
+    if (currentEpisode?.url && durationMillis && durationMillis > 0) {
+      usePreviewStore.getState().generate(currentEpisode.url, durationMillis);
+    }
+  }, [currentEpisode?.url, durationMillis]);
 
   // 优化的屏幕点击处理
   const onScreenPress = useCallback(() => {
