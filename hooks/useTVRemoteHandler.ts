@@ -17,8 +17,13 @@ export const useTVRemoteHandler = () => {
     togglePlayPause,
     enterPreview,
     movePreviewSelection,
+    movePreviewTimeline,
+    setPreviewFocusRow,
     commitPreview,
   } = usePlayerStore();
+
+  // Coarse jump for the timeline row (1 minute per press).
+  const TIMELINE_STEP_MS = 60 * 1000;
 
   const controlsTimer = useRef<NodeJS.Timeout | null>(null);
   const fastForwardIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -100,9 +105,11 @@ export const useTVRemoteHandler = () => {
           }
           break;
         case "left":
-          // 左键：进入预览 / 在预览中把选中框左移一格（不影响正在进行的播放）
+          // 左键：进入预览 / 在预览中左移（缩略图行=选画面，时间轴行=快退1分钟）
           if (!isPreviewing) {
             enterPreview();
+          } else if (usePlayerStore.getState().previewFocusRow === "timeline") {
+            movePreviewTimeline(-TIMELINE_STEP_MS);
           } else {
             movePreviewSelection(-1);
           }
@@ -110,6 +117,8 @@ export const useTVRemoteHandler = () => {
         case "right":
           if (!isPreviewing) {
             enterPreview();
+          } else if (usePlayerStore.getState().previewFocusRow === "timeline") {
+            movePreviewTimeline(TIMELINE_STEP_MS);
           } else {
             movePreviewSelection(1);
           }
@@ -118,7 +127,11 @@ export const useTVRemoteHandler = () => {
           if (!fastForwardIntervalRef.current && event.eventKeyAction === 0) {
             usePlayerStore.getState().enterPreview();
             fastForwardIntervalRef.current = setInterval(() => {
-              usePlayerStore.getState().movePreviewSelection(-1);
+              if (usePlayerStore.getState().previewFocusRow === "timeline") {
+                usePlayerStore.getState().movePreviewTimeline(-TIMELINE_STEP_MS);
+              } else {
+                usePlayerStore.getState().movePreviewSelection(-1);
+              }
             }, 250);
           }
           break;
@@ -126,19 +139,32 @@ export const useTVRemoteHandler = () => {
           if (!fastForwardIntervalRef.current && event.eventKeyAction === 0) {
             usePlayerStore.getState().enterPreview();
             fastForwardIntervalRef.current = setInterval(() => {
-              usePlayerStore.getState().movePreviewSelection(1);
+              if (usePlayerStore.getState().previewFocusRow === "timeline") {
+                usePlayerStore.getState().movePreviewTimeline(TIMELINE_STEP_MS);
+              } else {
+                usePlayerStore.getState().movePreviewSelection(1);
+              }
             }, 250);
           }
           break;
+        case "up":
+          // 预览中：上键切回缩略图行做精细选择
+          if (isPreviewing) {
+            setPreviewFocusRow("strip");
+          }
+          break;
         case "down":
-          if (!isPreviewing) {
+          if (isPreviewing) {
+            // 预览中：下键切到时间轴行做大范围快速定位
+            setPreviewFocusRow("timeline");
+          } else {
             setShowControls(true);
             resetTimer();
           }
           break;
       }
     },
-    [showControls, showEpisodeModal, setShowControls, resetTimer, togglePlayPause, enterPreview, movePreviewSelection, commitPreview]
+    [showControls, showEpisodeModal, setShowControls, resetTimer, togglePlayPause, enterPreview, movePreviewSelection, movePreviewTimeline, setPreviewFocusRow, commitPreview]
   );
 
   useTVEventHandler(handleTVEvent);

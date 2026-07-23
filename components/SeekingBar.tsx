@@ -30,6 +30,7 @@ const formatTime = (milliseconds: number) => {
 export const SeekingBar = () => {
   const isPreviewing = usePlayerStore((s) => s.isPreviewing);
   const selectedIndex = usePlayerStore((s) => s.previewSelectedIndex);
+  const focusRow = usePlayerStore((s) => s.previewFocusRow);
   const status = usePlayerStore((s) => s.status);
   const frames = usePreviewStore((s) => s.frames);
 
@@ -49,8 +50,9 @@ export const SeekingBar = () => {
       <View style={styles.strip}>
         {frames.map((frame, index) => {
           const isCursor = index === selectedIndex; // highlighted == the jump target
+          const activeStyle = isCursor ? (focusRow === "strip" ? styles.cellActive : styles.cellActiveDim) : null;
           return (
-            <View key={`${frame.time}-${index}`} style={[styles.cell, isCursor && styles.cellActive]}>
+            <View key={`${frame.time}-${index}`} style={[styles.cell, activeStyle]}>
               {frame.uri ? (
                 <Image source={{ uri: frame.uri }} style={styles.cellImage} resizeMode="cover" />
               ) : (
@@ -70,13 +72,23 @@ export const SeekingBar = () => {
       <Text style={styles.cursorTime}>
         {formatTime(selectedTime)} / {formatTime(durationMillis)}
       </Text>
-      <Text style={styles.hint}>左右键选择画面 · 确认键跳转 · 返回键继续播放</Text>
+      <Text style={styles.hint}>
+        {focusRow === "timeline"
+          ? "左右快速定位(±1分钟) · 上键切回画面 · 确认键跳转 · 返回键继续"
+          : "左右选择画面 · 下键切到进度条 · 确认键跳转 · 返回键继续"}
+      </Text>
 
       {/* Progress bar: real playback position + preview cursor marker */}
-      <View style={styles.barContainer}>
+      <View style={[styles.barContainer, focusRow === "timeline" && styles.barContainerActive]}>
         <View style={styles.barBackground} />
         <View style={[styles.barPlayed, { width: `${Math.min(100, Math.max(0, playedRatio * 100))}%` }]} />
-        <View style={[styles.cursorMarker, { left: `${Math.min(100, Math.max(0, cursorRatio * 100))}%` }]} />
+        <View
+          style={[
+            styles.cursorMarker,
+            focusRow === "timeline" && styles.cursorMarkerActive,
+            { left: `${Math.min(100, Math.max(0, cursorRatio * 100))}%` },
+          ]}
+        />
       </View>
     </View>
   );
@@ -109,6 +121,10 @@ const styles = StyleSheet.create({
   cellActive: {
     borderColor: Colors.dark.primary,
     transform: [{ scale: 1.08 }],
+  },
+  cellActiveDim: {
+    // Selected cell while the timeline row has focus (subtler than strip focus).
+    borderColor: "rgba(255,255,255,0.85)",
   },
   cellImage: {
     width: "100%",
@@ -158,6 +174,10 @@ const styles = StyleSheet.create({
     position: "relative",
     justifyContent: "center",
   },
+  barContainerActive: {
+    // Emphasize the timeline bar when it has focus.
+    height: 10,
+  },
   barBackground: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(255,255,255,0.3)",
@@ -178,5 +198,11 @@ const styles = StyleSheet.create({
     marginLeft: -2,
     borderRadius: 2,
     backgroundColor: Colors.dark.primary,
+  },
+  cursorMarkerActive: {
+    width: 6,
+    height: 22,
+    top: -6,
+    marginLeft: -3,
   },
 });

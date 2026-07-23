@@ -10,6 +10,9 @@ import Logger from '@/utils/Logger';
 
 const logger = Logger.withTag('PlayerStore');
 
+// Coarse jump step for the timeline row of the preview UI (1 minute).
+const PREVIEW_TIMELINE_STEP_MS = 60 * 1000;
+
 interface Episode {
   url: string;
   title: string;
@@ -36,6 +39,9 @@ interface PlayerState {
   isPreviewing: boolean;
   previewWindowStartMillis: number;
   previewSelectedIndex: number;
+  // Which row of the preview UI has focus: the thumbnail strip (fine, per-frame)
+  // or the timeline bar (coarse, ±1min jumps).
+  previewFocusRow: "strip" | "timeline";
   isSeeking: boolean;
   seekPosition: number;
   progressPosition: number;
@@ -63,6 +69,8 @@ interface PlayerState {
   setShowNextEpisodeOverlay: (show: boolean) => void;
   enterPreview: () => void;
   movePreviewSelection: (delta: number) => void;
+  movePreviewTimeline: (deltaMs: number) => void;
+  setPreviewFocusRow: (row: "strip" | "timeline") => void;
   commitPreview: () => void;
   cancelPreview: () => void;
   setPlaybackRate: (rate: number) => void;
@@ -91,6 +99,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   isPreviewing: false,
   previewWindowStartMillis: 0,
   previewSelectedIndex: 0,
+  previewFocusRow: "strip",
   isSeeking: false,
   seekPosition: 0,
   progressPosition: 0,
@@ -469,7 +478,33 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     if (isPreviewing) return;
     const pos = status?.isLoaded ? status.positionMillis : 0;
     // Start the window at the current playback position, selecting the first cell.
-    set({ isPreviewing: true, previewWindowStartMillis: pos, previewSelectedIndex: 0 });
+    set({ isPreviewing: true, previewWindowStartMillis: pos, previewSelectedIndex: 0, previewFocusRow: "strip" });
+  },
+
+  setPreviewFocusRow: (row) => {
+    const { isPreviewing, previewFocusRow, previewWindowStartMillis, previewSelectedIndex } = get();
+    if (!isPreviewing || previewFocusRow === row) return;
+    if (row === "timeline") {
+      // Re-anchor the window so the currently selected frame becomes the timeline
+      // cursor (first cell), then coarse jumps move from there.
+      const target = previewWindowStartMillis + previewSelectedIndex * PREVIEW_STEP_MS;
+      set({ previewFocusRow: "timeline", previewWindowStartMillis: target, previewSelectedIndex: 0 });
+    } else {
+      set({ previewFocusRow: "strip" });
+    }
+  },
+
+  movePreviewTimeline: (deltaMs) => {
+    const { status, previewWindowStartMillis, previewSelectedIndex, isPreviewing } = get();
+    if (!isPreviewing) return;
+    const duration = status?.isLoaded ? status.durationMillis || 0 : 0;
+    const maxStart = duration > 0 ? Math.max(0, duration - 1000) : Number.MAX_SAFE_INTEGER;
+    const target = previewWindowStartMillis + previewSelectedIndex * PREVIEW_STEP_MS;
+    let next = target + deltaMs;
+    if (next < 0) next = 0;
+    if (next > maxStart) next = maxStart;
+    // Window follows the timeline cursor; cursor sits on the first cell.
+    set({ previewWindowStartMillis: next, previewSelectedIndex: 0 });
   },
 
   movePreviewSelection: (delta) => {
@@ -550,6 +585,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       isPreviewing: false,
       previewWindowStartMillis: 0,
       previewSelectedIndex: 0,
+      previewFocusRow: "strip",
       initialPosition: 0,
       playbackRate: 1.0,
       introEndTime: undefined,
