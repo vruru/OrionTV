@@ -61,15 +61,33 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
   fetchServerConfig: async () => {
     set({ isLoadingServerConfig: true });
+    // Retry a few times: on a cold start (e.g. reopening after days) the first
+    // request can fail while the network stack warms up. Without a retry the app
+    // ends up with no server config and can't load saved resources until the
+    // user manually re-saves settings.
+    const maxAttempts = 3;
     try {
-      const config = await api.getServerConfig();
-      if (config) {
-        storageConfig.setStorageType(config.StorageType);
-        set({ serverConfig: config });
+      let lastError: unknown = null;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          const config = await api.getServerConfig();
+          if (config) {
+            storageConfig.setStorageType(config.StorageType);
+            set({ serverConfig: config });
+            return;
+          }
+        } catch (error) {
+          lastError = error;
+          logger.error(`Failed to fetch server config (attempt ${attempt}/${maxAttempts}):`, error);
+          if (attempt < maxAttempts) {
+            await new Promise((resolve) => setTimeout(resolve, 800 * attempt));
+          }
+        }
       }
-    } catch (error) {
       set({ serverConfig: null });
-      logger.error("Failed to fetch server config:", error);
+      if (lastError) {
+        logger.error("Giving up fetching server config after retries:", lastError);
+      }
     } finally {
       set({ isLoadingServerConfig: false });
     }

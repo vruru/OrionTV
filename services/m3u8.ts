@@ -30,12 +30,27 @@ export const getResolutionFromM3U8 = async (
     return null;
   }
 
+  // Guard against a slow/hanging m3u8 host. Resolution detection is only used
+  // for display/sorting, so it must never block playback indefinitely.
+  const FETCH_TIMEOUT = 6000;
+  const timeoutController = new AbortController();
+  const timeoutId = setTimeout(() => timeoutController.abort(), FETCH_TIMEOUT);
+  // Abort our fetch if the caller's signal aborts too.
+  const onExternalAbort = () => timeoutController.abort();
+  if (signal) {
+    if (signal.aborted) {
+      timeoutController.abort();
+    } else {
+      signal.addEventListener("abort", onExternalAbort);
+    }
+  }
+
   try {
     const fetchStart = performance.now();
-    const response = await fetch(url, { signal });
+    const response = await fetch(url, { signal: timeoutController.signal });
     const fetchEnd = performance.now();
     logger.info(`[PERF] M3U8 fetch took ${(fetchEnd - fetchStart).toFixed(2)}ms, status: ${response.status}`);
-    
+
     if (!response.ok) {
       return null;
     }
@@ -76,5 +91,10 @@ export const getResolutionFromM3U8 = async (
     const perfEnd = performance.now();
     logger.info(`[PERF] M3U8 resolution detection ERROR - took ${(perfEnd - perfStart).toFixed(2)}ms, error: ${error}`);
     return null;
+  } finally {
+    clearTimeout(timeoutId);
+    if (signal) {
+      signal.removeEventListener("abort", onExternalAbort);
+    }
   }
 };

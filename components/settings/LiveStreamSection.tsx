@@ -14,6 +14,8 @@ interface LiveStreamSectionProps {
   onFocus?: () => void;
   onBlur?: () => void;
   onPress?: () => void;
+  onInputFocus?: () => void;
+  onInputBlur?: () => void;
 }
 
 export interface LiveStreamSectionRef {
@@ -21,7 +23,7 @@ export interface LiveStreamSectionRef {
 }
 
 export const LiveStreamSection = forwardRef<LiveStreamSectionRef, LiveStreamSectionProps>(
-  ({ onChanged, onFocus, onBlur, onPress }, ref) => {
+  ({ onChanged, onFocus, onBlur, onPress, onInputFocus, onInputBlur }, ref) => {
     const { m3uUrl, setM3uUrl, remoteInputEnabled } = useSettingsStore();
     const { serverUrl } = useRemoteControlStore();
     const [isInputFocused, setIsInputFocused] = useState(false);
@@ -103,6 +105,7 @@ export const LiveStreamSection = forwardRef<LiveStreamSectionRef, LiveStreamSect
               autoCorrect={false}
               onFocus={() => {
                 setIsInputFocused(true);
+                onInputFocus?.();
                 // 将光标移动到文本末尾
                 const end = m3uUrl.length;
                 setSelection({ start: end, end: end });
@@ -116,7 +119,10 @@ export const LiveStreamSection = forwardRef<LiveStreamSectionRef, LiveStreamSect
               selection={selection}
               onSelectionChange={onSelectionChange} // 可选
 
-              onBlur={() => setIsInputFocused(false)}
+              onBlur={() => {
+                setIsInputFocused(false);
+                onInputBlur?.();
+              }}
             // onPress={handlePress}
             />
           </Animated.View>

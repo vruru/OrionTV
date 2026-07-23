@@ -14,6 +14,8 @@ interface APIConfigSectionProps {
   onFocus?: () => void;
   onBlur?: () => void;
   onPress?: () => void;
+  onInputFocus?: () => void;
+  onInputBlur?: () => void;
   hideDescription?: boolean;
 }
 
@@ -22,7 +24,7 @@ export interface APIConfigSectionRef {
 }
 
 export const APIConfigSection = forwardRef<APIConfigSectionRef, APIConfigSectionProps>(
-  ({ onChanged, onFocus, onBlur, onPress, hideDescription = false }, ref) => {
+  ({ onChanged, onFocus, onBlur, onPress, onInputFocus, onInputBlur, hideDescription = false }, ref) => {
     const { apiBaseUrl, setApiBaseUrl, remoteInputEnabled } = useSettingsStore();
     const { serverUrl } = useRemoteControlStore();
     const [isInputFocused, setIsInputFocused] = useState(false);
@@ -104,6 +106,7 @@ export const APIConfigSection = forwardRef<APIConfigSectionRef, APIConfigSection
               autoCorrect={false}
               onFocus={() => {
                 setIsInputFocused(true);
+                onInputFocus?.();
                 // 将光标移动到文本末尾
                 const end = apiBaseUrl.length;
                 setSelection({ start: end, end: end });
@@ -117,7 +120,10 @@ export const APIConfigSection = forwardRef<APIConfigSectionRef, APIConfigSection
               selection={selection}
               onSelectionChange={onSelectionChange} // 可选
 
-              onBlur={() => setIsInputFocused(false)}
+              onBlur={() => {
+                setIsInputFocused(false);
+                onInputBlur?.();
+              }}
             />
           </Animated.View>
         </View>

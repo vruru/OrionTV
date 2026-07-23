@@ -49,6 +49,10 @@ export default function SettingsScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [currentFocusIndex, setCurrentFocusIndex] = useState(0);
   const [currentSection, setCurrentSection] = useState<string | null>(null);
+  // True while a text input inside a section is being edited (IME open on TV).
+  // While editing we must not let the screen-level TV key handler move focus,
+  // otherwise pressing the D-pad closes the keyboard immediately.
+  const [isEditingInput, setIsEditingInput] = useState(false);
 
   const saveButtonRef = useRef<any>(null);
   const apiSectionRef = useRef<any>(null);
@@ -181,6 +185,8 @@ export default function SettingsScreen() {
             setCurrentFocusIndex(1);
             setCurrentSection("api");
           }}
+          onInputFocus={() => setIsEditingInput(true)}
+          onInputBlur={() => setIsEditingInput(false)}
         />
       ),
       key: "api",
@@ -194,6 +200,8 @@ export default function SettingsScreen() {
             setCurrentFocusIndex(2);
             setCurrentSection("livestream");
           }}
+          onInputFocus={() => setIsEditingInput(true)}
+          onInputBlur={() => setIsEditingInput(false)}
         />
       ),
       key: "livestream",
@@ -211,6 +219,11 @@ export default function SettingsScreen() {
   const handleTVEvent = React.useCallback(
     (event: any) => {
       if (deviceType !== "tv") return;
+      // While a text input is focused, let the IME handle D-pad events. Moving
+      // focus here (e.g. to the save button) would dismiss the keyboard before
+      // the user can finish typing. This is what caused the live-source input
+      // to "close immediately" when it was the last focusable section.
+      if (isEditingInput) return;
 
       if (event.eventType === "down") {
         const nextIndex = Math.min(currentFocusIndex + 1, sections.length);
@@ -223,7 +236,7 @@ export default function SettingsScreen() {
         setCurrentFocusIndex(prevIndex);
       }
     },
-    [currentFocusIndex, sections.length, deviceType]
+    [currentFocusIndex, sections.length, deviceType, isEditingInput]
   );
 
   useTVEventHandler(deviceType === "tv" ? handleTVEvent : () => { });

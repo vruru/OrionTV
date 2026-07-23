@@ -64,38 +64,54 @@ const useDetailStore = create<DetailState>((set, get) => ({
 
     const { videoSource } = useSettingsStore.getState();
 
-    const processAndSetResults = async (results: SearchResult[], merge = false) => {
-      const resolutionStart = performance.now();
-      logger.info(`[PERF] Resolution detection START - processing ${results.length} sources`);
-      
-      const resultsWithResolution = await Promise.all(
-        results.map(async (searchResult) => {
-          let resolution;
-          const m3u8Start = performance.now();
-          try {
-            if (searchResult.episodes && searchResult.episodes.length > 0) {
-              resolution = await getResolutionFromM3U8(searchResult.episodes[0], signal);
-            }
-          } catch (e) {
-            if ((e as Error).name !== "AbortError") {
-              logger.info(`Failed to get resolution for ${searchResult.source_name}`, e);
-            }
+    // Detect stream resolution in the background and patch it onto results that
+    // are already in the store. Resolution is only used for display/sorting, so
+    // it must never block making a source playable.
+    const detectResolutionsInBackground = (results: SearchResult[]) => {
+      results.forEach(async (searchResult) => {
+        if (!searchResult.episodes || searchResult.episodes.length === 0) return;
+        let resolution: string | null | undefined;
+        try {
+          resolution = await getResolutionFromM3U8(searchResult.episodes[0], signal);
+        } catch (e) {
+          if ((e as Error).name !== "AbortError") {
+            logger.info(`Failed to get resolution for ${searchResult.source_name}`, e);
           }
-          const m3u8End = performance.now();
-          logger.info(`[PERF] M3U8 resolution for ${searchResult.source_name}: ${(m3u8End - m3u8Start).toFixed(2)}ms (${resolution || 'failed'})`);
-          return { ...searchResult, resolution };
-        })
-      );
-      
-      const resolutionEnd = performance.now();
-      logger.info(`[PERF] Resolution detection COMPLETE - took ${(resolutionEnd - resolutionStart).toFixed(2)}ms`);
+          return;
+        }
+        if (signal.aborted || resolution === undefined) return;
 
+        set((state) => {
+          const patched = state.searchResults.map((r) =>
+            r.source === searchResult.source ? { ...r, resolution } : r
+          );
+          return {
+            searchResults: patched,
+            sources: patched.map((r) => ({
+              source: r.source,
+              source_name: r.source_name,
+              resolution: r.resolution,
+            })),
+          };
+        });
+      });
+    };
+
+    const processAndSetResults = async (results: SearchResult[], merge = false) => {
       if (signal.aborted) return;
 
+      // Set results immediately (without waiting for resolution probing) so that
+      // playback / episode data is available as soon as the search returns. This
+      // fixes the case where opening a title from history would fail to get a
+      // play source because slow m3u8 resolution detection blocked the load.
       set((state) => {
         const existingSources = new Set(state.searchResults.map((r) => r.source));
-        const newResults = resultsWithResolution.filter((r) => !existingSources.has(r.source));
-        const finalResults = merge ? [...state.searchResults, ...newResults] : resultsWithResolution;
+        const newResults = (results as SearchResultWithResolution[]).filter(
+          (r) => !existingSources.has(r.source)
+        );
+        const finalResults = merge
+          ? [...state.searchResults, ...newResults]
+          : (results as SearchResultWithResolution[]);
 
         return {
           searchResults: finalResults,
@@ -107,6 +123,9 @@ const useDetailStore = create<DetailState>((set, get) => ({
           detail: state.detail ?? finalResults[0] ?? null,
         };
       });
+
+      // Fire-and-forget resolution probing; it updates the store when finished.
+      detectResolutionsInBackground(results);
     };
 
     try {

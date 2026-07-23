@@ -75,8 +75,14 @@ export interface ServerConfig {
   StorageType: "localstorage" | "redis" | string;
 }
 
+// Storage key for saved login credentials (kept in sync with services/storage.ts).
+// Read directly here to avoid a circular import with storage.ts.
+const LOGIN_CREDENTIALS_KEY = "mytv_login_credentials";
+
 export class API {
   public baseURL: string = "";
+  // Guards against concurrent re-login attempts when several requests 401 at once.
+  private reloginPromise: Promise<boolean> | null = null;
 
   constructor(baseURL?: string) {
     if (baseURL) {
@@ -88,7 +94,52 @@ export class API {
     this.baseURL = url;
   }
 
-  private async _fetch(url: string, options: RequestInit = {}): Promise<Response> {
+  /**
+   * Attempt to silently re-login using saved credentials.
+   * The native cookie jar can be cleared when the app is killed for a while
+   * (e.g. left closed for a couple of days), which invalidates the session and
+   * makes every authenticated request return 401. Re-logging in transparently
+   * restores the session cookie so the user does not have to re-enter settings
+   * or log in again manually.
+   */
+  private async _tryRelogin(): Promise<boolean> {
+    if (this.reloginPromise) {
+      return this.reloginPromise;
+    }
+
+    this.reloginPromise = (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(LOGIN_CREDENTIALS_KEY);
+        if (!raw) return false;
+        const creds = JSON.parse(raw) as { username?: string; password?: string };
+        if (!creds || !creds.password) return false;
+
+        const response = await fetch(`${this.baseURL}/api/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: creds.username, password: creds.password }),
+        });
+        if (!response.ok) return false;
+
+        const cookies = response.headers.get("Set-Cookie");
+        if (cookies) {
+          await AsyncStorage.setItem("authCookies", cookies);
+        }
+        return true;
+      } catch {
+        return false;
+      } finally {
+        // Release the guard on the next tick so bursts of 401s share one attempt.
+        setTimeout(() => {
+          this.reloginPromise = null;
+        }, 0);
+      }
+    })();
+
+    return this.reloginPromise;
+  }
+
+  private async _fetch(url: string, options: RequestInit = {}, allowRetry = true): Promise<Response> {
     if (!this.baseURL) {
       throw new Error("API_URL_NOT_SET");
     }
@@ -96,6 +147,14 @@ export class API {
     const response = await fetch(`${this.baseURL}${url}`, options);
 
     if (response.status === 401) {
+      // Session likely expired / cookie jar cleared. Try to recover silently
+      // with saved credentials, then retry the original request once.
+      if (allowRetry && url !== "/api/login") {
+        const reloggedIn = await this._tryRelogin();
+        if (reloggedIn) {
+          return this._fetch(url, options, false);
+        }
+      }
       throw new Error("UNAUTHORIZED");
     }
 

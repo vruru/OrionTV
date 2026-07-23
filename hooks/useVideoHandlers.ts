@@ -40,7 +40,18 @@ export const useVideoHandlers = ({
       console.info(`[AUTOPLAY] Attempting to start playback after onLoad`);
       await videoRef.current?.playAsync();
       console.info(`[AUTOPLAY] Auto-play successful after onLoad`);
-      
+
+      // 3. 重新应用播放速度。Android 上切换剧集/播放源会重新加载 Video，
+      // rate 属性有时不会自动生效，这里显式设置以保证倍速持续有效。
+      if (playbackRate && playbackRate !== 1.0) {
+        try {
+          await videoRef.current?.setRateAsync(playbackRate, true);
+          console.info(`[RATE] Re-applied playback rate ${playbackRate}x after onLoad`);
+        } catch (rateError) {
+          console.warn(`[RATE] Failed to re-apply playback rate:`, rateError);
+        }
+      }
+
       usePlayerStore.setState({ isLoading: false });
       console.info(`[PERF] Video loading complete - isLoading set to false`);
     } catch (error) {
@@ -49,7 +60,7 @@ export const useVideoHandlers = ({
       usePlayerStore.setState({ isLoading: false });
       // 不显示错误提示，因为自动播放失败是常见且预期的情况
     }
-  }, [videoRef, initialPosition, introEndTime]);
+  }, [videoRef, initialPosition, introEndTime, playbackRate]);
 
   const onLoadStart = useCallback(() => {
     if (!currentEpisode?.url) return;
