@@ -5,13 +5,13 @@ export const UPDATE_CONFIG = {
   // 检查更新间隔（毫秒）
   CHECK_INTERVAL: 12 * 60 * 60 * 1000, // 12小时
 
-  // GitHub相关URL
+  // GitHub相关URL —— 指向本 fork (vruru/OrionTV) 的最新 Releases 进行检查与更新
   GITHUB_RAW_URL:
-    `https://ghfast.top/https://raw.githubusercontent.com/orion-lib/OrionTV/refs/heads/master/package.json?t=${Date.now()}`,
+    `https://ghfast.top/https://raw.githubusercontent.com/vruru/OrionTV/refs/heads/master/package.json?t=${Date.now()}`,
 
   // 获取平台特定的下载URL
   getDownloadUrl(version: string): string {
-    return `https://ghfast.top/https://github.com/orion-lib/OrionTV/releases/download/v${version}/orionTV.${version}.apk`;
+    return `https://ghfast.top/https://github.com/vruru/OrionTV/releases/download/v${version}/orionTV.${version}.apk`;
   },
 
   // 是否显示更新日志

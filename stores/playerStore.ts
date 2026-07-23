@@ -4,6 +4,7 @@ import { AVPlaybackStatus, Video } from "expo-av";
 import { RefObject } from "react";
 import { PlayRecord, PlayRecordManager, PlayerSettingsManager } from "@/services/storage";
 import useDetailStore, { episodesSelectorBySource } from "./detailStore";
+import { useSettingsStore } from "./settingsStore";
 import Logger from '@/utils/Logger';
 
 const logger = Logger.withTag('PlayerStore');
@@ -24,6 +25,9 @@ interface PlayerState {
   showSourceModal: boolean;
   showSpeedModal: boolean;
   showNextEpisodeOverlay: boolean;
+  // True once the last episode of the current title has finished playing;
+  // the play screen watches this to return to the home page automatically.
+  playbackAllFinished: boolean;
   isSeeking: boolean;
   seekPosition: number;
   progressPosition: number;
@@ -71,6 +75,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   showSourceModal: false,
   showSpeedModal: false,
   showNextEpisodeOverlay: false,
+  playbackAllFinished: false,
   isSeeking: false,
   seekPosition: 0,
   progressPosition: 0,
@@ -394,8 +399,11 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
 
     const { currentEpisodeIndex, episodes, outroStartTime, playEpisode } = get();
     const detail = useDetailStore.getState().detail;
+    const autoSkipIntroOutro = useSettingsStore.getState().autoSkipIntroOutro;
 
+    // 自动跳过片尾（仅在开关开启且已标记片尾时间时生效）
     if (
+      autoSkipIntroOutro &&
       outroStartTime &&
       newStatus.durationMillis &&
       newStatus.positionMillis >= newStatus.durationMillis - outroStartTime
@@ -403,6 +411,10 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       if (currentEpisodeIndex < episodes.length - 1) {
         playEpisode(currentEpisodeIndex + 1);
         return; // Stop further processing for this update
+      } else {
+        // 最后一集到达片尾，视为整部播放完毕
+        set({ playbackAllFinished: true });
+        return;
       }
     }
 
@@ -420,6 +432,9 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     if (newStatus.didJustFinish) {
       if (currentEpisodeIndex < episodes.length - 1) {
         playEpisode(currentEpisodeIndex + 1);
+      } else {
+        // 所有剧集播放完毕 -> 通知播放页返回首页
+        set({ playbackAllFinished: true });
       }
     }
 
@@ -462,6 +477,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       showSourceModal: false,
       showSpeedModal: false,
       showNextEpisodeOverlay: false,
+      playbackAllFinished: false,
       initialPosition: 0,
       playbackRate: 1.0,
       introEndTime: undefined,

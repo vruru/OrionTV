@@ -1,8 +1,10 @@
 import React from "react";
 import { View, Text, StyleSheet, Modal, FlatList } from "react-native";
 import { StyledButton } from "./StyledButton";
-import useDetailStore from "@/stores/detailStore";
+import useDetailStore, { SearchResultWithResolution } from "@/stores/detailStore";
 import usePlayerStore from "@/stores/playerStore";
+import { useSettingsStore } from "@/stores/settingsStore";
+import { filterHdSources } from "@/utils/sourceFilter";
 import Logger from '@/utils/Logger';
 
 const logger = Logger.withTag('SourceSelectionModal');
@@ -10,13 +12,17 @@ const logger = Logger.withTag('SourceSelectionModal');
 export const SourceSelectionModal: React.FC = () => {
   const { showSourceModal, setShowSourceModal, loadVideo, currentEpisodeIndex, status } = usePlayerStore();
   const { searchResults, detail, setDetail } = useDetailStore();
+  const hdSourcesOnly = useSettingsStore((s) => s.hdSourcesOnly);
 
-  const onSelectSource = (index: number) => {
-    logger.debug("onSelectSource", index, searchResults[index].source, detail?.source);
-    if (searchResults[index].source !== detail?.source) {
-      const newDetail = searchResults[index];
+  // Optionally hide sub-1080p sources from the in-player selection list.
+  const displaySources = filterHdSources(searchResults, hdSourcesOnly);
+
+  const onSelectSource = (item: SearchResultWithResolution) => {
+    logger.debug("onSelectSource", item.source, detail?.source);
+    if (item.source !== detail?.source) {
+      const newDetail = item;
       setDetail(newDetail);
-      
+
       // Reload the video with the new source, preserving current position
       const currentPosition = status?.isLoaded ? status.positionMillis : undefined;
       loadVideo({
@@ -40,14 +46,14 @@ export const SourceSelectionModal: React.FC = () => {
         <View style={styles.modalContent}>
           <Text style={styles.modalTitle}>选择播放源</Text>
           <FlatList
-            data={searchResults}
+            data={displaySources}
             numColumns={3}
             contentContainerStyle={styles.sourceList}
             keyExtractor={(item, index) => `source-${item.source}-${index}`}
-            renderItem={({ item, index }) => (
+            renderItem={({ item }) => (
               <StyledButton
-                text={item.source_name}
-                onPress={() => onSelectSource(index)}
+                text={item.resolution ? `${item.source_name} · ${item.resolution}` : item.source_name}
+                onPress={() => onSelectSource(item)}
                 isSelected={detail?.source === item.source}
                 hasTVPreferredFocus={detail?.source === item.source}
                 style={styles.sourceItem}

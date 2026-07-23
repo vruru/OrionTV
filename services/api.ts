@@ -75,6 +75,26 @@ export interface ServerConfig {
   StorageType: "localstorage" | "redis" | string;
 }
 
+export interface LiveSource {
+  key: string;
+  name: string;
+  url: string;
+  ua?: string;
+  epg?: string;
+  channelNumber?: number;
+  from?: string;
+  disabled?: boolean;
+}
+
+export interface LiveChannel {
+  id: string;
+  tvgId?: string;
+  name: string;
+  logo?: string;
+  group?: string;
+  url: string;
+}
+
 // Storage key for saved login credentials (kept in sync with services/storage.ts).
 // Read directly here to avoid a circular import with storage.ts.
 const LOGIN_CREDENTIALS_KEY = "mytv_login_credentials";
@@ -293,6 +313,19 @@ export class API {
     const url = `/api/detail?source=${source}&id=${id}`;
     const response = await this._fetch(url);
     return response.json();
+  }
+
+  // --- Live TV (managed by the backend, e.g. LunaTV) ---
+  async getLiveSources(): Promise<LiveSource[]> {
+    const response = await this._fetch("/api/live/sources");
+    const json = await response.json();
+    return (json?.data ?? []) as LiveSource[];
+  }
+
+  async getLiveChannels(sourceKey: string): Promise<LiveChannel[]> {
+    const response = await this._fetch(`/api/live/channels?source=${encodeURIComponent(sourceKey)}`);
+    const json = await response.json();
+    return (json?.data ?? []) as LiveChannel[];
   }
 }
 

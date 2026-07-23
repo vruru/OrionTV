@@ -6,6 +6,8 @@ import { ThemedText } from "@/components/ThemedText";
 import { StyledButton } from "@/components/StyledButton";
 import VideoLoadingAnimation from "@/components/VideoLoadingAnimation";
 import useDetailStore from "@/stores/detailStore";
+import { useSettingsStore } from "@/stores/settingsStore";
+import { filterHdSources } from "@/utils/sourceFilter";
 import { FontAwesome } from "@expo/vector-icons";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
@@ -33,6 +35,10 @@ export default function DetailScreen() {
     isFavorited,
     toggleFavorite,
   } = useDetailStore();
+  const hdSourcesOnly = useSettingsStore((s) => s.hdSourcesOnly);
+
+  // Optionally hide sub-1080p sources from the source list on this page.
+  const displaySources = filterHdSources(searchResults, hdSourcesOnly);
 
   useEffect(() => {
     if (q) {
@@ -141,11 +147,11 @@ export default function DetailScreen() {
           {/* 播放源 */}
           <View style={dynamicStyles.sourcesContainer}>
             <View style={dynamicStyles.sourcesTitleContainer}>
-              <ThemedText style={dynamicStyles.sourcesTitle}>播放源 ({searchResults.length})</ThemedText>
+              <ThemedText style={dynamicStyles.sourcesTitle}>播放源 ({displaySources.length})</ThemedText>
               {!allSourcesLoaded && <ActivityIndicator style={{ marginLeft: 10 }} />}
             </View>
             <View style={dynamicStyles.sourceList}>
-              {searchResults.map((item, index) => {
+              {displaySources.map((item, index) => {
                 const isSelected = detail?.source === item.source;
                 return (
                   <StyledButton
@@ -223,11 +229,11 @@ export default function DetailScreen() {
           <View style={dynamicStyles.bottomContainer}>
             <View style={dynamicStyles.sourcesContainer}>
               <View style={dynamicStyles.sourcesTitleContainer}>
-                <ThemedText style={dynamicStyles.sourcesTitle}>选择播放源 共 {searchResults.length} 个</ThemedText>
+                <ThemedText style={dynamicStyles.sourcesTitle}>选择播放源 共 {displaySources.length} 个</ThemedText>
                 {!allSourcesLoaded && <ActivityIndicator style={{ marginLeft: 10 }} />}
               </View>
               <View style={dynamicStyles.sourceList}>
-                {searchResults.map((item, index) => {
+                {displaySources.map((item, index) => {
                   const isSelected = detail?.source === item.source;
                   return (
                     <StyledButton

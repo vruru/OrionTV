@@ -116,6 +116,8 @@ export default function PlayScreen() {
   // Duration of the currently loaded video (stable once loaded); used to
   // pre-generate seek-preview thumbnails across the timeline.
   const durationMillis = usePlayerStore((s) => (s.status?.isLoaded ? s.status.durationMillis : undefined));
+  // Set to true once the final episode finishes -> return to home.
+  const playbackAllFinished = usePlayerStore((s) => s.playbackAllFinished);
 
   // 使用Video事件处理hook
   const { videoProps } = useVideoHandlers({
@@ -165,6 +167,14 @@ export default function PlayScreen() {
       usePreviewStore.getState().generate(currentEpisode.url, durationMillis);
     }
   }, [currentEpisode?.url, durationMillis]);
+
+  // When the whole title has finished (last episode ended), go back to home.
+  useEffect(() => {
+    if (playbackAllFinished) {
+      Toast.show({ type: "info", text1: "已播放完所有剧集，返回首页" });
+      router.replace("/");
+    }
+  }, [playbackAllFinished, router]);
 
   // 优化的屏幕点击处理
   const onScreenPress = useCallback(() => {

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Modal, View, TextInput, StyleSheet, ActivityIndicator, Alert, Keyboard, InteractionManager } from "react-native";
+import { Modal, View, TextInput, StyleSheet, ActivityIndicator, Keyboard, InteractionManager } from "react-native";
 import { usePathname } from "expo-router";
 import Toast from "react-native-toast-message";
 import useAuthStore from "@/stores/authStore";
@@ -94,32 +94,16 @@ const LoginModal = () => {
       await LoginCredentialsManager.save({ username, password });
 
       Toast.show({ type: "success", text1: "登录成功" });
-      // hideLoginModal();
 
-      // // Show disclaimer alert after successful login
-      // Alert.alert(
-      //   "免责声明",
-      //   "本应用仅提供影视信息搜索服务，所有内容均来自第三方网站。本站不存储任何视频资源，不对任何内容的准确性、合法性、完整性负责。",
-      //   [{ text: "确定" }]
-      // );
-
-            // 在登录成功后清理状态，再显示 Alert
-      const hideAndAlert = () => {
+      // 登录成功后直接关闭登录框（不再弹出免责声明提示框）
+      const closeModal = () => {
         hideLoginModal();
         setIsModalReady(false);
         Keyboard.dismiss();
-
-        setTimeout(() => {
-          Alert.alert(
-            "免责声明",
-            "本应用仅提供影视信息搜索服务，所有内容均来自第三方网站。本站不存储任何视频资源，不对任何内容的准确性、合法性、完整性负责。",
-            [{ text: "确定" }]
-          );
-        }, 100);
       };
 
       // 使用 InteractionManager 确保 UI 稳定后再执行
-      InteractionManager.runAfterInteractions(hideAndAlert);
+      InteractionManager.runAfterInteractions(closeModal);
 
     } catch (error) {
       Toast.show({

@@ -2,17 +2,36 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { View, FlatList, StyleSheet, ActivityIndicator, Modal, useTVEventHandler, HWEvent, Text } from "react-native";
 import LivePlayer from "@/components/LivePlayer";
 import { fetchAndParseM3u, getPlayableUrl, Channel } from "@/services/m3u";
+import { api } from "@/services/api";
 import { ThemedView } from "@/components/ThemedView";
 import { StyledButton } from "@/components/StyledButton";
 import { useSettingsStore } from "@/stores/settingsStore";
+import Logger from "@/utils/Logger";
+
+const logger = Logger.withTag("LiveScreen");
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
 import ResponsiveNavigation from "@/components/navigation/ResponsiveNavigation";
 import ResponsiveHeader from "@/components/navigation/ResponsiveHeader";
 import { DeviceUtils } from "@/utils/DeviceUtils";
 
+// Convert backend live channels into the local Channel shape.
+const mapChannels = (
+  chans: { id?: string; name?: string; url: string; logo?: string; group?: string }[],
+  fallbackGroup: string
+): Channel[] =>
+  chans
+    .filter((c) => !!c.url)
+    .map((c) => ({
+      id: c.id || c.url,
+      name: c.name || "未知频道",
+      url: c.url,
+      logo: c.logo || "",
+      group: c.group || fallbackGroup || "Default",
+    }));
+
 export default function LiveScreen() {
-  const { m3uUrl } = useSettingsStore();
+  const { m3uUrl, apiBaseUrl } = useSettingsStore();
   
   // 响应式布局配置
   const responsiveConfig = useResponsiveLayout();
@@ -34,32 +53,71 @@ export default function LiveScreen() {
 
   useEffect(() => {
     const loadChannels = async () => {
-      if (!m3uUrl) return;
       setIsLoading(true);
-      const parsedChannels = await fetchAndParseM3u(m3uUrl);
-      setChannels(parsedChannels);
+      let parsedChannels: Channel[] = [];
 
-      const groups: Record<string, Channel[]> = parsedChannels.reduce((acc, channel) => {
-        const groupName = channel.group || "Other";
-        if (!acc[groupName]) {
-          acc[groupName] = [];
+      try {
+        // 1. 优先使用后端(LunaTV)管理的直播源：无需在 App 里手动填写地址，
+        //    直接用已配置的服务器地址(apiBaseUrl)拉取后端的直播源和频道。
+        if (apiBaseUrl) {
+          try {
+            const sources = await api.getLiveSources();
+            const enabled = sources.filter((s) => !s.disabled);
+            for (const src of enabled) {
+              try {
+                const chans = await api.getLiveChannels(src.key);
+                const mapped = mapChannels(chans, src.name);
+                if (mapped.length > 0) {
+                  parsedChannels = mapped;
+                  break;
+                }
+              } catch (channelErr) {
+                // 频道缓存可能尚未生成(404)，退而尝试直接解析该源的上游 m3u 地址
+                logger.info(`getLiveChannels failed for ${src.key}, trying its m3u url`, channelErr);
+                if (src.url) {
+                  const fromM3u = await fetchAndParseM3u(src.url);
+                  if (fromM3u.length > 0) {
+                    parsedChannels = fromM3u;
+                    break;
+                  }
+                }
+              }
+            }
+          } catch (sourcesErr) {
+            logger.info("getLiveSources failed, will fall back to manual m3u url", sourcesErr);
+          }
         }
-        acc[groupName].push(channel);
-        return acc;
-      }, {} as Record<string, Channel[]>);
 
-      const groupNames = Object.keys(groups);
-      setGroupedChannels(groups);
-      setChannelGroups(groupNames);
-      setSelectedGroup(groupNames[0] || "");
+        // 2. 回退：如果后端没有可用直播源，且用户手动填了直播源地址，则解析它
+        if (parsedChannels.length === 0 && m3uUrl) {
+          parsedChannels = await fetchAndParseM3u(m3uUrl);
+        }
+      } finally {
+        setChannels(parsedChannels);
 
-      if (parsedChannels.length > 0) {
-        showChannelTitle(parsedChannels[0].name);
+        const groups: Record<string, Channel[]> = parsedChannels.reduce((acc, channel) => {
+          const groupName = channel.group || "Other";
+          if (!acc[groupName]) {
+            acc[groupName] = [];
+          }
+          acc[groupName].push(channel);
+          return acc;
+        }, {} as Record<string, Channel[]>);
+
+        const groupNames = Object.keys(groups);
+        setGroupedChannels(groups);
+        setChannelGroups(groupNames);
+        setSelectedGroup(groupNames[0] || "");
+        setCurrentChannelIndex(0);
+
+        if (parsedChannels.length > 0) {
+          showChannelTitle(parsedChannels[0].name);
+        }
+        setIsLoading(false);
       }
-      setIsLoading(false);
     };
     loadChannels();
-  }, [m3uUrl]);
+  }, [m3uUrl, apiBaseUrl]);
 
   const showChannelTitle = (title: string) => {
     setChannelTitle(title);
@@ -107,11 +165,25 @@ export default function LiveScreen() {
 
   const renderLiveContent = () => (
     <>
-      <LivePlayer 
-        streamUrl={selectedChannelUrl} 
-        channelTitle={channelTitle} 
-        onPlaybackStatusUpdate={() => {}} 
+      <LivePlayer
+        streamUrl={selectedChannelUrl}
+        channelTitle={channelTitle}
+        onPlaybackStatusUpdate={() => {}}
       />
+      {isLoading && channels.length === 0 && (
+        <View style={styles.centerOverlay} pointerEvents="none">
+          <ActivityIndicator size="large" color="#fff" />
+          <Text style={styles.overlayText}>正在加载直播源...</Text>
+        </View>
+      )}
+      {!isLoading && channels.length === 0 && (
+        <View style={styles.centerOverlay} pointerEvents="none">
+          <Text style={styles.overlayText}>未获取到直播源</Text>
+          <Text style={styles.overlaySubText}>
+            请在后端(管理员设置-直播源配置)添加并启用直播源，或在设置里填写 M3U 直播源地址
+          </Text>
+        </View>
+      )}
       <Modal
         animationType="slide"
         transparent={true}
@@ -182,6 +254,29 @@ export default function LiveScreen() {
     </ResponsiveNavigation>
   );
 }
+
+const styles = StyleSheet.create({
+  centerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 40,
+  },
+  overlayText: {
+    color: "white",
+    fontSize: 18,
+    fontWeight: "bold",
+    marginTop: 12,
+    textAlign: "center",
+  },
+  overlaySubText: {
+    color: "#bbb",
+    fontSize: 14,
+    marginTop: 8,
+    textAlign: "center",
+    lineHeight: 20,
+  },
+});
 
 const createResponsiveStyles = (deviceType: string, spacing: number) => {
   const isMobile = deviceType === 'mobile';

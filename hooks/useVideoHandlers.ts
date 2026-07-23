@@ -2,6 +2,7 @@ import { useCallback, RefObject, useMemo } from 'react';
 import { Video, ResizeMode } from 'expo-av';
 import Toast from 'react-native-toast-message';
 import usePlayerStore from '@/stores/playerStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 
 interface UseVideoHandlersProps {
   videoRef: RefObject<Video>;
@@ -29,8 +30,10 @@ export const useVideoHandlers = ({
     console.info(`[PERF] Video onLoad - video ready to play`);
     
     try {
-      // 1. 先设置位置（如果需要）
-      const jumpPosition = initialPosition || introEndTime || 0;
+      // 1. 先设置位置（如果需要）。片头跳过仅在“自动跳过片头片尾”开启时生效；
+      //    继续播放的进度(initialPosition)始终优先。
+      const autoSkipIntroOutro = useSettingsStore.getState().autoSkipIntroOutro;
+      const jumpPosition = initialPosition || (autoSkipIntroOutro ? introEndTime || 0 : 0) || 0;
       if (jumpPosition > 0) {
         console.info(`[PERF] Setting initial position to ${jumpPosition}ms`);
         await videoRef.current?.setPositionAsync(jumpPosition);
