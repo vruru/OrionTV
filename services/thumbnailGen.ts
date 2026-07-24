@@ -101,9 +101,28 @@ const resolveMediaPlaylistUrl = async (url: string): Promise<{ url: string; text
 
 let tempCounter = 0;
 
-const extractFromHls = async (m3u8Url: string, timeMillis: number): Promise<string | null> => {
+// Cache the parsed segment list per playlist so a 6-frame window doesn't refetch
+// and reparse the same m3u8 six times (keeps sequential generation fast).
+interface ParsedPlaylist {
+  segments: Segment[];
+  encrypted: boolean;
+  ts: number;
+}
+const playlistCache = new Map<string, ParsedPlaylist>();
+const PLAYLIST_TTL = 60 * 1000;
+
+const getPlaylist = async (m3u8Url: string): Promise<ParsedPlaylist> => {
+  const cached = playlistCache.get(m3u8Url);
+  if (cached && Date.now() - cached.ts < PLAYLIST_TTL) return cached;
   const { url: mediaUrl, text } = await resolveMediaPlaylistUrl(m3u8Url);
-  const { segments, encrypted } = parseMediaPlaylist(text, mediaUrl);
+  const parsed = parseMediaPlaylist(text, mediaUrl);
+  const entry: ParsedPlaylist = { segments: parsed.segments, encrypted: parsed.encrypted, ts: Date.now() };
+  playlistCache.set(m3u8Url, entry);
+  return entry;
+};
+
+const extractFromHls = async (m3u8Url: string, timeMillis: number): Promise<string | null> => {
+  const { segments, encrypted } = await getPlaylist(m3u8Url);
   if (encrypted || segments.length === 0) {
     logger.info(`[HLS] Cannot extract (encrypted=${encrypted}, segments=${segments.length})`);
     return null;

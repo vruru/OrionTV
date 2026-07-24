@@ -13,13 +13,16 @@ export interface PreviewFrame {
   loading: boolean; // true while extraction is in progress (show spinner)
 }
 
-// How many frames to extract at the same time. Fully parallel (6) can overwhelm
-// the native video decoder on some TV boxes and none finish; fully sequential is
-// slow. A small pool is the reliable middle ground.
-const CONCURRENCY = 2;
+// How many frames to extract at the same time. The native frame extractor
+// (expo-video-thumbnails) plus concurrent segment downloads cannot handle many
+// simultaneous native operations on some TV boxes — they deadlock and nothing
+// ever completes (endless spinners). Extract sequentially, which is reliable
+// (this is how it worked before); the per-window playlist cache in thumbnailGen
+// keeps it fast.
+const CONCURRENCY = 1;
 // Per-frame hard timeout so a stuck segment download / decode never leaves a
-// cell spinning forever (it falls back to a time label instead).
-const FRAME_TIMEOUT_MS = 15000;
+// cell spinning forever (it falls back to a placeholder instead).
+const FRAME_TIMEOUT_MS = 20000;
 
 interface PreviewState {
   sourceUrl: string | null;
