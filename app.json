@@ -51,7 +51,8 @@
       "permissions": [
         "android.permission.INTERNET",
         "android.permission.ACCESS_NETWORK_STATE",
-        "android.permission.WAKE_LOCK"
+        "android.permission.WAKE_LOCK",
+        "android.permission.REQUEST_INSTALL_PACKAGES"
       ],
       "screenOrientation": "unspecified",
       "intentFilters": [

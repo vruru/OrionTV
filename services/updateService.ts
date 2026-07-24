@@ -177,41 +177,7 @@ class UpdateService {
     const contentUri = await FileSystem.getContentUriAsync(fileUri);
 
     // ③ 只在 Android 里执行
-    if (Platform.OS === 'android') {
-      try {
-        // FLAG_ACTIVITY_NEW_TASK = 0x10000000 (1)
-        // FLAG_GRANT_READ_URI_PERMISSION = 0x00000010
-        const flags = 1 | 0x00000010;   // 1 | 16
-
-        await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
-          data: contentUri,          // 必须是 content://
-          type: ANDROID_MIME_TYPE,   // application/vnd.android.package-archive
-          flags,
-        });
-      } catch (e: any) {
-        // 统一错误提示
-        if (e.message?.includes('Activity not found')) {
-          Toast.show({
-            type: 'error',
-            text1: '安装失败',
-            text2: '系统没有找到可以打开 APK 的应用，请检查系统设置',
-          });
-        } else if (e.message?.includes('permission')) {
-          Toast.show({
-            type: 'error',
-            text1: '安装失败',
-            text2: '请在设置里允许“未知来源”安装',
-          });
-        } else {
-          Toast.show({
-            type: 'error',
-            text1: '安装失败',
-            text2: '未知错误，请稍后重试',
-          });
-        }
-        throw e;
-      }
-    } else {
+    if (Platform.OS !== 'android') {
       // iOS 设备不支持直接安装 APK
       Toast.show({
         type: 'error',
@@ -220,6 +186,62 @@ class UpdateService {
       });
       throw new Error('APK install not supported on iOS');
     }
+
+    // 需要授予接收方读取 content:// 的权限，并以新任务方式启动系统安装器。
+    const FLAG_GRANT_READ_URI_PERMISSION = 0x00000001;
+    const FLAG_ACTIVITY_NEW_TASK = 0x10000000;
+    const flags = FLAG_GRANT_READ_URI_PERMISSION | FLAG_ACTIVITY_NEW_TASK;
+
+    // 不同的 Android 电视盒子/固件对“安装 APK”的 Intent 支持不一致：
+    // 部分盒子没有响应 ACTION_VIEW(application/vnd.android.package-archive) 的
+    // 界面（就会报 ActivityNotFoundException），但系统 PackageInstaller 会响应
+    // ACTION_INSTALL_PACKAGE。这里按可靠性依次尝试多种方式，任意一种成功即可。
+    const strategies: { action: string; withType: boolean; label: string }[] = [
+      { action: 'android.intent.action.INSTALL_PACKAGE', withType: false, label: 'INSTALL_PACKAGE' },
+      { action: 'android.intent.action.INSTALL_PACKAGE', withType: true, label: 'INSTALL_PACKAGE+type' },
+      { action: 'android.intent.action.VIEW', withType: true, label: 'VIEW' },
+    ];
+
+    let lastError: any = null;
+    for (const s of strategies) {
+      try {
+        await IntentLauncher.startActivityAsync(s.action, {
+          data: contentUri, // 必须是 content://
+          ...(s.withType ? { type: ANDROID_MIME_TYPE } : {}),
+          flags,
+          extra: { 'android.intent.extra.NOT_UNKNOWN_SOURCE': true },
+        });
+        logger.debug(`installApk launched via ${s.label}`);
+        return; // 成功启动安装界面
+      } catch (e: any) {
+        lastError = e;
+        logger.warn(`installApk strategy ${s.label} failed: ${e?.message}`);
+        // 继续尝试下一种方式
+      }
+    }
+
+    // 所有方式都失败
+    const msg: string = lastError?.message || '';
+    if (msg.includes('Activity not found') || msg.includes('ActivityNotFound')) {
+      Toast.show({
+        type: 'error',
+        text1: '安装失败',
+        text2: '系统未找到可安装 APK 的程序，请确认已允许本应用安装未知来源应用',
+      });
+    } else if (msg.toLowerCase().includes('permission')) {
+      Toast.show({
+        type: 'error',
+        text1: '安装失败',
+        text2: '请在系统设置里允许本应用“安装未知应用/未知来源”',
+      });
+    } else {
+      Toast.show({
+        type: 'error',
+        text1: '安装失败',
+        text2: '未知错误，请稍后重试或手动安装',
+      });
+    }
+    throw lastError || new Error('APK install failed');
   }
 
   /** --------------------------------------------------------------
