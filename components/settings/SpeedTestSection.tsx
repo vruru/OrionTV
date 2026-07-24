@@ -28,6 +28,18 @@ export const SpeedTestSection: React.FC<SpeedTestSectionProps> = ({ onFocus, onB
     if (!isTesting) runTest();
   };
 
+  // Focus can land on either the SettingsSection wrapper or the inner Pressable
+  // on TV, so both must set the same flag (mirrors RemoteInputSection). This is
+  // what makes the confirm key actually trigger the test.
+  const handleSectionFocus = () => {
+    setIsFocused(true);
+    onFocus?.();
+  };
+  const handleSectionBlur = () => {
+    setIsFocused(false);
+    onBlur?.();
+  };
+
   const handleTVEvent = React.useCallback(
     (event: any) => {
       if (isFocused && event.eventType === "select") start();
@@ -42,12 +54,16 @@ export const SpeedTestSection: React.FC<SpeedTestSectionProps> = ({ onFocus, onB
     : "尚未测试，点击开始测速";
 
   return (
-    <SettingsSection focusable onFocus={onFocus} onBlur={onBlur}>
+    <SettingsSection
+      focusable
+      onFocus={handleSectionFocus}
+      onBlur={handleSectionBlur}
+      {...(Platform.isTV || deviceType !== "tv" ? undefined : { onPress: start })}
+    >
       <Pressable
         style={styles.settingItem}
-        onFocus={() => setIsFocused(true)}
-        onBlur={() => setIsFocused(false)}
-        {...(Platform.isTV || deviceType !== "tv" ? undefined : { onPress: start })}
+        onFocus={handleSectionFocus}
+        onBlur={handleSectionBlur}
       >
         <View style={styles.settingInfo}>
           <ThemedText style={styles.settingName}>源速度测试</ThemedText>
