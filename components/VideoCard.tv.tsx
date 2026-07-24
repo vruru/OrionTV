@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, forwardRef } from "react";
-import { View, Text, Image, StyleSheet, Pressable, TouchableOpacity, Alert, Animated, Platform } from "react-native";
+import { View, Text, Image, StyleSheet, Pressable, TouchableOpacity, Alert, Animated, Platform, useTVEventHandler } from "react-native";
 import { useRouter } from "expo-router";
 import { Star, Play } from "lucide-react-native";
 import { PlayRecordManager } from "@/services/storage";
@@ -108,13 +108,10 @@ const VideoCard = forwardRef<View, VideoCardProps>(
       }).start();
     }, [fadeAnim]);
 
-    const handleLongPress = () => {
-      // Only allow long press for items with progress (play records)
+    // 弹出“删除观看记录”确认框（仅对有播放进度的最近播放项目有效）
+    const showDeleteDialog = useCallback(() => {
       if (progress === undefined) return;
 
-      longPressTriggered.current = true;
-
-      // Show confirmation dialog to delete play record
       Alert.alert("删除观看记录", `确定要删除"${title}"的观看记录吗？`, [
         {
           text: "取消",
@@ -125,15 +122,10 @@ const VideoCard = forwardRef<View, VideoCardProps>(
           style: "destructive",
           onPress: async () => {
             try {
-              // Delete from local storage
               await PlayRecordManager.remove(source, id);
-
-              // Call the onRecordDeleted callback
               if (onRecordDeleted) {
                 onRecordDeleted();
-              }
-              // 如果没有回调函数，则使用导航刷新作为备选方案
-              else if (router.canGoBack()) {
+              } else if (router.canGoBack()) {
                 router.replace("/");
               }
             } catch (error) {
@@ -143,7 +135,27 @@ const VideoCard = forwardRef<View, VideoCardProps>(
           },
         },
       ]);
+    }, [progress, title, source, id, onRecordDeleted, router]);
+
+    const handleLongPress = () => {
+      // Only allow long press for items with progress (play records)
+      if (progress === undefined) return;
+      longPressTriggered.current = true;
+      showDeleteDialog();
     };
+
+    // 遥控器“菜单键”：当当前卡片获得焦点时，弹出删除该最近播放记录的菜单。
+    const handleTVEvent = useCallback(
+      (event: any) => {
+        if (deviceType !== "tv" || !isFocused || progress === undefined) return;
+        const type = event?.eventType;
+        if (type === "menu" || type === "contextMenu" || type === "longSelect") {
+          showDeleteDialog();
+        }
+      },
+      [deviceType, isFocused, progress, showDeleteDialog]
+    );
+    useTVEventHandler(handleTVEvent);
 
     // 是否是继续观看的视频
     const isContinueWatching = progress !== undefined && progress > 0 && progress < 1;
