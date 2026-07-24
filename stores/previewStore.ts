@@ -9,8 +9,17 @@ export const PREVIEW_STEP_MS = 10000; // spacing between thumbnails (10s)
 
 export interface PreviewFrame {
   time: number; // absolute position in ms
-  uri: string | null; // local image uri, or null while loading / unsupported
+  uri: string | null; // local image uri, or null
+  loading: boolean; // true while extraction is in progress (show spinner)
 }
+
+// How many frames to extract at the same time. Fully parallel (6) can overwhelm
+// the native video decoder on some TV boxes and none finish; fully sequential is
+// slow. A small pool is the reliable middle ground.
+const CONCURRENCY = 2;
+// Per-frame hard timeout so a stuck segment download / decode never leaves a
+// cell spinning forever (it falls back to a time label instead).
+const FRAME_TIMEOUT_MS = 15000;
 
 interface PreviewState {
   sourceUrl: string | null;
@@ -64,29 +73,52 @@ const usePreviewStore = create<PreviewState>((set, get) => ({
     const token = get().requestToken + 1;
     set({
       requestToken: token,
-      frames: times.map((t) => ({ time: t, uri: cache[roundKey(t)] ?? null })),
+      frames: times.map((t) => {
+        const cached = cache[roundKey(t)];
+        return { time: t, uri: cached ?? null, loading: !cached };
+      }),
     });
 
-    // Generate all missing frames in parallel so the 6 thumbnails come up
-    // together instead of trickling in one by one. Each extraction (segment
-    // download + native frame decode) runs off the JS thread, so firing them
-    // concurrently gives real parallelism; each cell updates as soon as its own
-    // frame is ready. Playback is unaffected (it runs on its own player).
-    times.forEach((t) => {
-      const key = roundKey(t);
-      if (get().cache[key]) return; // already cached
-      (async () => {
-        const uri = await generateThumbnail(sourceUrl, t);
-        if (get().requestToken !== token) return; // a newer window superseded us
-        if (uri) {
-          set((state) => ({
-            cache: { ...state.cache, [key]: uri },
-            frames: state.frames.map((f) => (f.time === t ? { ...f, uri } : f)),
-          }));
-        }
-      })();
-    });
-    logger.info(`[PREVIEW] window @${base}ms dispatched ${times.length} frames in parallel`);
+    // Frames still needing extraction.
+    const pending = times.filter((t) => !get().cache[roundKey(t)]);
+    if (pending.length === 0) {
+      logger.info(`[PREVIEW] window @${base}ms fully cached`);
+      return;
+    }
+
+    const finishFrame = (t: number, uri: string | null) => {
+      if (get().requestToken !== token) return; // a newer window superseded us
+      set((state) => ({
+        cache: uri ? { ...state.cache, [roundKey(t)]: uri } : state.cache,
+        frames: state.frames.map((f) => (f.time === t ? { ...f, uri, loading: false } : f)),
+      }));
+    };
+
+    const extractOne = async (t: number) => {
+      let done = false;
+      // Race the extraction against a hard timeout so a stuck source can't leave
+      // the cell spinning forever.
+      const uri = await Promise.race<string | null>([
+        generateThumbnail(sourceUrl, t).then((u) => {
+          done = true;
+          return u;
+        }),
+        new Promise<string | null>((resolve) => setTimeout(() => (done ? undefined : resolve(null)), FRAME_TIMEOUT_MS)),
+      ]).catch(() => null);
+      finishFrame(t, uri);
+    };
+
+    // Run with limited concurrency (a small pool of workers pulling from the queue).
+    const queue = [...pending];
+    const worker = async () => {
+      while (queue.length > 0) {
+        if (get().requestToken !== token) return;
+        const t = queue.shift()!;
+        await extractOne(t);
+      }
+    };
+    const workers = Array.from({ length: Math.min(CONCURRENCY, pending.length) }, () => worker());
+    Promise.all(workers).then(() => logger.info(`[PREVIEW] window @${base}ms done (${pending.length} frames)`));
   },
 
   reset: () => set({ sourceUrl: null, durationMillis: 0, frames: [], cache: {}, requestToken: get().requestToken + 1 }),

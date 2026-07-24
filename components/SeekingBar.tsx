@@ -55,9 +55,13 @@ export const SeekingBar = () => {
             <View key={`${frame.time}-${index}`} style={[styles.cell, activeStyle]}>
               {frame.uri ? (
                 <Image source={{ uri: frame.uri }} style={styles.cellImage} resizeMode="cover" />
-              ) : (
+              ) : frame.loading ? (
                 <View style={styles.cellPlaceholder}>
                   <ActivityIndicator size="small" color="#888" />
+                </View>
+              ) : (
+                <View style={styles.cellPlaceholder}>
+                  <Text style={styles.cellNoImage}>无预览</Text>
                 </View>
               )}
               <View style={styles.cellTimeOverlay}>
@@ -137,6 +141,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#1a1a1a",
+  },
+  cellNoImage: {
+    color: "#777",
+    fontSize: 12,
   },
   cellTimeOverlay: {
     position: "absolute",
