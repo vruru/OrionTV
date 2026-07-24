@@ -29,28 +29,98 @@ class UpdateService {
     return UpdateService.instance;
   }
 
+  /** 带超时的 fetch */
+  private async fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 10_000): Promise<Response> {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(id);
+    }
+  }
+
+  /**
+   * 通过 GitHub Releases API 获取“确实带有 APK 资源”的最新发布版本。
+   * 之前的做法只读 package.json 的版本号并拼出下载地址，并不校验该版本是否真的
+   * 发布了 APK；因此在 CI 构建尚未完成、或构建失败时，会显示新版本号但点击更新
+   * 却下载失败。这里改为以真正带 apk 资源的 release 为准。
+   */
+  private async fetchLatestReleaseWithApk(): Promise<VersionInfo | null> {
+    const apiUrl = UPDATE_CONFIG.getReleasesApiUrl();
+    // 优先走加速代理，失败再直连 api.github.com
+    const candidates = [UPDATE_CONFIG.withProxy(apiUrl), apiUrl];
+
+    for (const url of candidates) {
+      try {
+        const res = await this.fetchWithTimeout(url, {
+          headers: { Accept: 'application/vnd.github+json' },
+        });
+        if (!res.ok) continue;
+        const releases = await res.json();
+        if (!Array.isArray(releases)) continue;
+
+        for (const rel of releases) {
+          if (rel.draft || rel.prerelease) continue;
+          const assets: any[] = Array.isArray(rel.assets) ? rel.assets : [];
+          const apk = assets.find(
+            (a) => typeof a.name === 'string' && a.name.toLowerCase().endsWith('.apk') && (a.state ? a.state === 'uploaded' : true)
+          );
+          if (apk && apk.browser_download_url) {
+            const version = String(rel.tag_name || '').replace(/^v/i, '');
+            if (!version) continue;
+            return {
+              version,
+              // 用加速代理包裹真实的资源下载地址
+              downloadUrl: UPDATE_CONFIG.withProxy(apk.browser_download_url),
+            };
+          }
+        }
+      } catch (e) {
+        logger.warn(`releases API failed for ${url}`, e);
+      }
+    }
+    return null;
+  }
+
+  /** HEAD 校验下载地址是否真的存在（用于 package.json 回退路径） */
+  private async verifyUrlAvailable(url: string): Promise<boolean> {
+    try {
+      const res = await this.fetchWithTimeout(url, { method: 'HEAD' }, 8_000);
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
   /** --------------------------------------------------------------
-   *  1️⃣ 远程版本检查（保持不变，只是把 fetch 包装成 async/await）
+   *  1️⃣ 远程版本检查：以“带 APK 资源的最新 release”为准
    * --------------------------------------------------------------- */
   async checkVersion(): Promise<VersionInfo> {
     const maxRetries = 3;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10_000);
-        const response = await fetch(UPDATE_CONFIG.GITHUB_RAW_URL, {
-          signal: controller.signal,
-        });
-        clearTimeout(timeoutId);
+        // 首选：GitHub Releases API（确保对应版本确实发布了 APK）
+        const fromApi = await this.fetchLatestReleaseWithApk();
+        if (fromApi) return fromApi;
+
+        // 回退：读取 master 的 package.json 版本号，但必须先校验 APK 已存在，
+        // 避免显示了新版本却没有对应 APK 导致更新失败。
+        const response = await this.fetchWithTimeout(UPDATE_CONFIG.GITHUB_RAW_URL);
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
         const remotePackage = await response.json();
         const remoteVersion = remotePackage.version as string;
-        return {
-          version: remoteVersion,
-          downloadUrl: UPDATE_CONFIG.getDownloadUrl(remoteVersion),
-        };
+        const downloadUrl = UPDATE_CONFIG.getDownloadUrl(remoteVersion);
+
+        const available = await this.verifyUrlAvailable(downloadUrl);
+        if (available) {
+          return { version: remoteVersion, downloadUrl };
+        }
+        // 新版本的 APK 尚未发布：按“当前即最新”处理，不误报可更新。
+        logger.warn(`Version ${remoteVersion} has no published APK yet; treating as no update.`);
+        return { version: currentVersion, downloadUrl: UPDATE_CONFIG.getDownloadUrl(currentVersion) };
       } catch (e) {
         logger.warn(`checkVersion attempt ${attempt}/${maxRetries}`, e);
         if (attempt === maxRetries) {
