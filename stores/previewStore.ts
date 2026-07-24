@@ -67,26 +67,26 @@ const usePreviewStore = create<PreviewState>((set, get) => ({
       frames: times.map((t) => ({ time: t, uri: cache[roundKey(t)] ?? null })),
     });
 
-    // Fill missing frames sequentially (limits native/network pressure and
-    // never blocks playback, which runs on its own player).
-    (async () => {
-      for (let i = 0; i < times.length; i++) {
-        if (get().requestToken !== token) return; // a newer window superseded us
-        const t = times[i];
-        const key = roundKey(t);
-        if (get().cache[key]) continue; // already have it
-
+    // Generate all missing frames in parallel so the 6 thumbnails come up
+    // together instead of trickling in one by one. Each extraction (segment
+    // download + native frame decode) runs off the JS thread, so firing them
+    // concurrently gives real parallelism; each cell updates as soon as its own
+    // frame is ready. Playback is unaffected (it runs on its own player).
+    times.forEach((t) => {
+      const key = roundKey(t);
+      if (get().cache[key]) return; // already cached
+      (async () => {
         const uri = await generateThumbnail(sourceUrl, t);
-        if (get().requestToken !== token) return;
+        if (get().requestToken !== token) return; // a newer window superseded us
         if (uri) {
           set((state) => ({
             cache: { ...state.cache, [key]: uri },
             frames: state.frames.map((f) => (f.time === t ? { ...f, uri } : f)),
           }));
         }
-      }
-      logger.info(`[PREVIEW] window @${base}ms done`);
-    })();
+      })();
+    });
+    logger.info(`[PREVIEW] window @${base}ms dispatched ${times.length} frames in parallel`);
   },
 
   reset: () => set({ sourceUrl: null, durationMillis: 0, frames: [], cache: {}, requestToken: get().requestToken + 1 }),
