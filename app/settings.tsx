@@ -13,6 +13,7 @@ import { APIConfigSection } from "@/components/settings/APIConfigSection";
 import { LiveStreamSection } from "@/components/settings/LiveStreamSection";
 import { RemoteInputSection } from "@/components/settings/RemoteInputSection";
 import { PlaybackSettingsSection } from "@/components/settings/PlaybackSettingsSection";
+import { SpeedTestSection } from "@/components/settings/SpeedTestSection";
 import { UpdateSection } from "@/components/settings/UpdateSection";
 // import { VideoSourceSection } from "@/components/settings/VideoSourceSection";
 import Toast from "react-native-toast-message";
@@ -218,6 +219,17 @@ export default function SettingsScreen() {
         />
       ),
       key: "playback",
+    },
+    {
+      component: (
+        <SpeedTestSection
+          onFocus={() => {
+            setCurrentFocusIndex(4);
+            setCurrentSection("speedtest");
+          }}
+        />
+      ),
+      key: "speedtest",
     },
     Platform.OS === "android" && {
       component: <UpdateSection />,

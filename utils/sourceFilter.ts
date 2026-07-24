@@ -29,3 +29,32 @@ export const filterHdSources = <T extends { resolution?: string | null }>(
   });
   return filtered.length > 0 ? filtered : sources;
 };
+
+// --- Source speed (populated by the manual speed test) ---
+
+export const formatSpeed = (mbps: number): string => `${mbps.toFixed(1)}M/s`;
+
+// Green > 2 MB/s, yellow 1–2 MB/s, red < 1 MB/s.
+export const speedColor = (mbps: number): string => {
+  if (mbps >= 2) return "#4ade80";
+  if (mbps >= 1) return "#facc15";
+  return "#f87171";
+};
+
+/**
+ * Sort sources by measured speed (fastest first) and keep only the top `limit`.
+ * Sources without a measured speed are treated as slowest so they sort last.
+ */
+export const sortAndLimitBySpeed = <T extends { source: string }>(
+  sources: T[],
+  speedMap: Record<string, { mbps: number }>,
+  limit = 5
+): T[] => {
+  const decorated = sources.map((s, index) => ({
+    s,
+    index,
+    mbps: speedMap[s.source] ? speedMap[s.source].mbps : -1,
+  }));
+  decorated.sort((a, b) => (b.mbps !== a.mbps ? b.mbps - a.mbps : a.index - b.index));
+  return decorated.slice(0, limit).map((d) => d.s);
+};

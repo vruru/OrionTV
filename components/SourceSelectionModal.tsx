@@ -4,7 +4,8 @@ import { StyledButton } from "./StyledButton";
 import useDetailStore, { SearchResultWithResolution } from "@/stores/detailStore";
 import usePlayerStore from "@/stores/playerStore";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { filterHdSources } from "@/utils/sourceFilter";
+import { useSpeedTestStore } from "@/stores/speedTestStore";
+import { filterHdSources, sortAndLimitBySpeed, formatSpeed, speedColor } from "@/utils/sourceFilter";
 import Logger from '@/utils/Logger';
 
 const logger = Logger.withTag('SourceSelectionModal');
@@ -13,9 +14,10 @@ export const SourceSelectionModal: React.FC = () => {
   const { showSourceModal, setShowSourceModal, loadVideo, currentEpisodeIndex, status } = usePlayerStore();
   const { searchResults, detail, setDetail } = useDetailStore();
   const hdSourcesOnly = useSettingsStore((s) => s.hdSourcesOnly);
+  const speedResults = useSpeedTestStore((s) => s.results);
 
-  // Optionally hide sub-1080p sources from the in-player selection list.
-  const displaySources = filterHdSources(searchResults, hdSourcesOnly);
+  // Hide sub-1080p sources, then keep the fastest 5 by measured speed.
+  const displaySources = sortAndLimitBySpeed(filterHdSources(searchResults, hdSourcesOnly), speedResults, 5);
 
   const onSelectSource = (item: SearchResultWithResolution) => {
     logger.debug("onSelectSource", item.source, detail?.source);
@@ -50,16 +52,23 @@ export const SourceSelectionModal: React.FC = () => {
             numColumns={3}
             contentContainerStyle={styles.sourceList}
             keyExtractor={(item, index) => `source-${item.source}-${index}`}
-            renderItem={({ item }) => (
-              <StyledButton
-                text={item.resolution ? `${item.source_name} · ${item.resolution}` : item.source_name}
-                onPress={() => onSelectSource(item)}
-                isSelected={detail?.source === item.source}
-                hasTVPreferredFocus={detail?.source === item.source}
-                style={styles.sourceItem}
-                textStyle={styles.sourceItemText}
-              />
-            )}
+            renderItem={({ item }) => {
+              const spd = speedResults[item.source];
+              return (
+                <StyledButton
+                  onPress={() => onSelectSource(item)}
+                  isSelected={detail?.source === item.source}
+                  hasTVPreferredFocus={detail?.source === item.source}
+                  style={styles.sourceItem}
+                >
+                  <Text style={styles.sourceItemText} numberOfLines={1}>
+                    {item.source_name}
+                    {item.resolution ? ` · ${item.resolution}` : ""}
+                    {spd ? <Text style={{ color: speedColor(spd.mbps) }}>{` (${formatSpeed(spd.mbps)})`}</Text> : ""}
+                  </Text>
+                </StyledButton>
+              );
+            }}
           />
         </View>
       </View>

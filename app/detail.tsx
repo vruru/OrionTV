@@ -7,7 +7,8 @@ import { StyledButton } from "@/components/StyledButton";
 import VideoLoadingAnimation from "@/components/VideoLoadingAnimation";
 import useDetailStore from "@/stores/detailStore";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { filterHdSources } from "@/utils/sourceFilter";
+import { useSpeedTestStore } from "@/stores/speedTestStore";
+import { filterHdSources, sortAndLimitBySpeed, formatSpeed, speedColor } from "@/utils/sourceFilter";
 import { FontAwesome } from "@expo/vector-icons";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
@@ -36,9 +37,10 @@ export default function DetailScreen() {
     toggleFavorite,
   } = useDetailStore();
   const hdSourcesOnly = useSettingsStore((s) => s.hdSourcesOnly);
+  const speedResults = useSpeedTestStore((s) => s.results);
 
-  // Optionally hide sub-1080p sources from the source list on this page.
-  const displaySources = filterHdSources(searchResults, hdSourcesOnly);
+  // Hide sub-1080p sources, then keep the fastest 5 by measured speed.
+  const displaySources = sortAndLimitBySpeed(filterHdSources(searchResults, hdSourcesOnly), speedResults, 5);
 
   useEffect(() => {
     if (q) {
@@ -153,6 +155,7 @@ export default function DetailScreen() {
             <View style={dynamicStyles.sourceList}>
               {displaySources.map((item, index) => {
                 const isSelected = detail?.source === item.source;
+                const spd = speedResults[item.source];
                 return (
                   <StyledButton
                     key={index}
@@ -160,7 +163,10 @@ export default function DetailScreen() {
                     isSelected={isSelected}
                     style={dynamicStyles.sourceButton}
                   >
-                    <ThemedText style={dynamicStyles.sourceButtonText}>{item.source_name}</ThemedText>
+                    <ThemedText style={dynamicStyles.sourceButtonText}>
+                      {item.source_name}
+                      {spd ? <Text style={{ color: speedColor(spd.mbps) }}>{`(${formatSpeed(spd.mbps)})`}</Text> : null}
+                    </ThemedText>
                     {item.episodes.length > 1 && (
                       <View style={[dynamicStyles.badge, isSelected && dynamicStyles.selectedBadge]}>
                         <Text style={dynamicStyles.badgeText}>
@@ -235,6 +241,7 @@ export default function DetailScreen() {
               <View style={dynamicStyles.sourceList}>
                 {displaySources.map((item, index) => {
                   const isSelected = detail?.source === item.source;
+                  const spd = speedResults[item.source];
                   return (
                     <StyledButton
                       key={index}
@@ -243,7 +250,10 @@ export default function DetailScreen() {
                       isSelected={isSelected}
                       style={dynamicStyles.sourceButton}
                     >
-                      <ThemedText style={dynamicStyles.sourceButtonText}>{item.source_name}</ThemedText>
+                      <ThemedText style={dynamicStyles.sourceButtonText}>
+                      {item.source_name}
+                      {spd ? <Text style={{ color: speedColor(spd.mbps) }}>{`(${formatSpeed(spd.mbps)})`}</Text> : null}
+                    </ThemedText>
                       {item.episodes.length > 1 && (
                         <View style={[dynamicStyles.badge, isSelected && dynamicStyles.selectedBadge]}>
                           <Text style={dynamicStyles.badgeText}>

@@ -9,6 +9,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useRemoteControlStore } from "@/stores/remoteControlStore";
+import { useSpeedTestStore } from "@/stores/speedTestStore";
 import LoginModal from "@/components/LoginModal";
 import useAuthStore from "@/stores/authStore";
 import { useUpdateStore, initUpdateStore } from "@/stores/updateStore";
@@ -39,6 +40,7 @@ export default function RootLayout() {
     };
     initializeApp();
     initUpdateStore(); // 初始化更新存储
+    useSpeedTestStore.getState().loadResults(); // 载入上次的源测速结果
   }, [loadSettings]);
 
   useEffect(() => {

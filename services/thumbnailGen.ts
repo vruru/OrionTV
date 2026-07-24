@@ -153,3 +153,22 @@ export const generateThumbnail = async (sourceUrl: string, timeMillis: number): 
 };
 
 export const isHlsUrl = isHls;
+
+/**
+ * Resolve an absolute media-segment URL for an HLS playlist at the given time.
+ * Used by the speed test to measure real stream throughput (the playlist itself
+ * is tiny). Returns null if it can't be resolved.
+ */
+export const resolveSegmentUrl = async (m3u8Url: string, atMillis: number): Promise<string | null> => {
+  try {
+    const { url: mediaUrl, text } = await resolveMediaPlaylistUrl(m3u8Url);
+    const { segments } = parseMediaPlaylist(text, mediaUrl);
+    if (segments.length === 0) return null;
+    const totalDuration = segments[segments.length - 1].start + segments[segments.length - 1].duration;
+    const targetSec = Math.min(Math.max(atMillis / 1000, 0), Math.max(totalDuration - 0.5, 0));
+    const seg = segments.find((s) => targetSec >= s.start && targetSec < s.start + s.duration) || segments[0];
+    return seg.uri;
+  } catch {
+    return null;
+  }
+};
