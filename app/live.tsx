@@ -125,6 +125,17 @@ export default function LiveScreen() {
     titleTimer.current = setTimeout(() => setChannelTitle(null), 3000);
   };
 
+  // 打开频道列表时，定位到当前正在播放的频道所在分组（默认不再总是显示第一个）
+  useEffect(() => {
+    if (isChannelListVisible && channels.length > 0) {
+      const current = channels[currentChannelIndex];
+      if (current) {
+        setSelectedGroup(current.group || "Other");
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isChannelListVisible]);
+
   const handleSelectChannel = (channel: Channel) => {
     const globalIndex = channels.findIndex((c) => c.id === channel.id);
     if (globalIndex !== -1) {
@@ -216,6 +227,11 @@ export default function LiveScreen() {
                   <FlatList
                     data={groupedChannels[selectedGroup] || []}
                     keyExtractor={(item, index) => `${item.id}-${item.group}-${index}`}
+                    // 让长按上下键时有更多已渲染的项，滚动/换焦更跟手
+                    initialNumToRender={20}
+                    maxToRenderPerBatch={20}
+                    windowSize={15}
+                    updateCellsBatchingPeriod={30}
                     renderItem={({ item }) => (
                       <StyledButton
                         text={item.name || "Unknown Channel"}

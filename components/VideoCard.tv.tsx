@@ -52,6 +52,9 @@ const VideoCard = forwardRef<View, VideoCardProps>(
     const [fadeAnim] = useState(new Animated.Value(0));
 
     const longPressTriggered = useRef(false);
+    // Prevents stacking multiple delete dialogs when the long-press / menu key
+    // fires repeatedly while held.
+    const dialogOpenRef = useRef(false);
 
     const scale = useRef(new Animated.Value(1)).current;
 
@@ -111,30 +114,44 @@ const VideoCard = forwardRef<View, VideoCardProps>(
     // 弹出“删除观看记录”确认框（仅对有播放进度的最近播放项目有效）
     const showDeleteDialog = useCallback(() => {
       if (progress === undefined) return;
+      // 已经弹出一个了就不再重复弹（长按/菜单键可能连续触发多次）
+      if (dialogOpenRef.current) return;
+      dialogOpenRef.current = true;
 
-      Alert.alert("删除观看记录", `确定要删除"${title}"的观看记录吗？`, [
-        {
-          text: "取消",
-          style: "cancel",
-        },
-        {
-          text: "删除",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              await PlayRecordManager.remove(source, id);
-              if (onRecordDeleted) {
-                onRecordDeleted();
-              } else if (router.canGoBack()) {
-                router.replace("/");
-              }
-            } catch (error) {
-              logger.info("Failed to delete play record:", error);
-              Alert.alert("错误", "删除观看记录失败，请重试");
-            }
+      const release = () => {
+        dialogOpenRef.current = false;
+      };
+
+      Alert.alert(
+        "删除观看记录",
+        `确定要删除"${title}"的观看记录吗？`,
+        [
+          {
+            text: "取消",
+            style: "cancel",
+            onPress: release,
           },
-        },
-      ]);
+          {
+            text: "删除",
+            style: "destructive",
+            onPress: async () => {
+              release();
+              try {
+                await PlayRecordManager.remove(source, id);
+                if (onRecordDeleted) {
+                  onRecordDeleted();
+                } else if (router.canGoBack()) {
+                  router.replace("/");
+                }
+              } catch (error) {
+                logger.info("Failed to delete play record:", error);
+                Alert.alert("错误", "删除观看记录失败，请重试");
+              }
+            },
+          },
+        ],
+        { cancelable: true, onDismiss: release }
+      );
     }, [progress, title, source, id, onRecordDeleted, router]);
 
     const handleLongPress = () => {
@@ -149,7 +166,8 @@ const VideoCard = forwardRef<View, VideoCardProps>(
       (event: any) => {
         if (deviceType !== "tv" || !isFocused || progress === undefined) return;
         const type = event?.eventType;
-        if (type === "menu" || type === "contextMenu" || type === "longSelect") {
+        // 只用菜单键触发；长按 OK 由 Pressable.onLongPress 处理，避免重复弹窗。
+        if (type === "menu" || type === "contextMenu") {
           showDeleteDialog();
         }
       },
