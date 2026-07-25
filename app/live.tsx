@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { View, FlatList, StyleSheet, ActivityIndicator, Modal, useTVEventHandler, HWEvent, Text } from "react-native";
+import { View, FlatList, StyleSheet, ActivityIndicator, Modal, useTVEventHandler, HWEvent, Text, Pressable } from "react-native";
 import LivePlayer from "@/components/LivePlayer";
 import { fetchAndParseM3u, getPlayableUrl, Channel } from "@/services/m3u";
 import { api } from "@/services/api";
 import { ThemedView } from "@/components/ThemedView";
-import { StyledButton } from "@/components/StyledButton";
+import { Colors } from "@/constants/Colors";
 import { useSettingsStore } from "@/stores/settingsStore";
 import Logger from "@/utils/Logger";
 
@@ -47,10 +47,27 @@ export default function LiveScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [isChannelListVisible, setIsChannelListVisible] = useState(false);
   const [channelTitle, setChannelTitle] = useState<string | null>(null);
+  // Self-managed cursor within the current group's channel list (like TiviMate
+  // etc.): we don't rely on the OS focus engine to move through the list.
+  const [listSelectedIndex, setListSelectedIndex] = useState(0);
   const titleTimer = useRef<NodeJS.Timeout | null>(null);
   const channelListRef = useRef<FlatList<Channel>>(null);
+  // Refs holding the latest values so key-repeat intervals read fresh data.
+  const cursorRef = useRef(0);
+  const groupListRef = useRef<Channel[]>([]);
+  const selectedGroupRef = useRef("");
+  const channelGroupsRef = useRef<string[]>([]);
+  const fastIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  const CHANNEL_ROW_HEIGHT = deviceType === "mobile" ? 48 : 42;
 
   const selectedChannelUrl = channels.length > 0 ? getPlayableUrl(channels[currentChannelIndex].url) : null;
+
+  // Keep refs in sync with the latest render.
+  const currentGroupList = groupedChannels[selectedGroup] || [];
+  groupListRef.current = currentGroupList;
+  selectedGroupRef.current = selectedGroup;
+  channelGroupsRef.current = channelGroups;
 
   useEffect(() => {
     const loadChannels = async () => {
@@ -126,9 +143,15 @@ export default function LiveScreen() {
     titleTimer.current = setTimeout(() => setChannelTitle(null), 3000);
   };
 
-  // 打开频道列表时，定位到当前正在播放的频道：切到它所在分组，并把列表滚动到该
-  // 频道处（虚拟列表不会渲染很靠后的项，仅靠 hasTVPreferredFocus 定位不到，必须
-  // 主动 scrollToIndex）。
+  const scrollToRow = (index: number, center = true) => {
+    try {
+      channelListRef.current?.scrollToIndex({ index, animated: false, viewPosition: center ? 0.5 : 0 });
+    } catch {
+      // getItemLayout makes this reliable; ignore rare races
+    }
+  };
+
+  // 打开频道列表时，把光标定位到当前正在播放的频道并滚动到它。
   useEffect(() => {
     if (!isChannelListVisible || channels.length === 0) return;
     const current = channels[currentChannelIndex];
@@ -137,20 +160,26 @@ export default function LiveScreen() {
     setSelectedGroup(group);
 
     const list = groupedChannels[group] || [];
-    const idx = list.findIndex((c) => c.id === current.id);
-    if (idx <= 0) return; // 第一个或找不到，无需滚动
+    const idx = Math.max(0, list.findIndex((c) => c.id === current.id));
+    cursorRef.current = idx;
+    setListSelectedIndex(idx);
 
-    // 等分组列表渲染后再滚动到当前频道
-    const t = setTimeout(() => {
-      try {
-        channelListRef.current?.scrollToIndex({ index: idx, animated: false, viewPosition: 0.5 });
-      } catch {
-        // 由 onScrollToIndexFailed 兜底
-      }
-    }, 250);
+    const t = setTimeout(() => scrollToRow(idx), 180);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isChannelListVisible]);
+
+  // 关闭列表 / 卸载时清理快速滚动定时器
+  const stopFast = () => {
+    if (fastIntervalRef.current) {
+      clearInterval(fastIntervalRef.current);
+      fastIntervalRef.current = null;
+    }
+  };
+  useEffect(() => {
+    if (!isChannelListVisible) stopFast();
+  }, [isChannelListVisible]);
+  useEffect(() => () => stopFast(), []);
 
   const handleSelectChannel = (channel: Channel) => {
     const globalIndex = channels.findIndex((c) => c.id === channel.id);
@@ -159,6 +188,49 @@ export default function LiveScreen() {
       showChannelTitle(channel.name);
       setIsChannelListVisible(false);
     }
+  };
+
+  // 列表内：移动光标（上下键 / 长按快速连跳都走这里）
+  const moveCursor = (delta: number) => {
+    const list = groupListRef.current;
+    if (list.length === 0) return;
+    let next = cursorRef.current + delta;
+    if (next < 0) next = 0;
+    if (next > list.length - 1) next = list.length - 1;
+    if (next === cursorRef.current) return;
+    cursorRef.current = next;
+    setListSelectedIndex(next);
+    scrollToRow(next);
+  };
+
+  // 列表内：左右键切换分组
+  const changeGroup = (delta: number) => {
+    const groups = channelGroupsRef.current;
+    if (groups.length <= 1) return;
+    const gi = groups.indexOf(selectedGroupRef.current);
+    let ni = gi + delta;
+    if (ni < 0) ni = 0;
+    if (ni > groups.length - 1) ni = groups.length - 1;
+    if (ni === gi) return;
+    setSelectedGroup(groups[ni]);
+    cursorRef.current = 0;
+    setListSelectedIndex(0);
+    setTimeout(() => {
+      try {
+        channelListRef.current?.scrollToOffset({ offset: 0, animated: false });
+      } catch {}
+    }, 0);
+  };
+
+  const confirmSelect = () => {
+    const ch = groupListRef.current[cursorRef.current];
+    if (ch) handleSelectChannel(ch);
+  };
+
+  const startFast = (delta: number) => {
+    stopFast();
+    moveCursor(delta);
+    fastIntervalRef.current = setInterval(() => moveCursor(delta), 70);
   };
 
   const changeChannel = useCallback(
@@ -176,16 +248,45 @@ export default function LiveScreen() {
 
   const handleTVEvent = useCallback(
     (event: HWEvent) => {
-      if (deviceType !== 'tv') return;
-      if (isChannelListVisible) return;
-      if (event.eventType === "down") setIsChannelListVisible(true);
-      else if (event.eventType === "left") changeChannel("prev");
-      else if (event.eventType === "right") changeChannel("next");
+      if (deviceType !== "tv") return;
+      const type = event?.eventType;
+      const action = (event as any)?.eventKeyAction;
+
+      if (!isChannelListVisible) {
+        // 播放器界面：左右换台，下键打开节目表
+        if (type === "down") setIsChannelListVisible(true);
+        else if (type === "left") changeChannel("prev");
+        else if (type === "right") changeChannel("next");
+        return;
+      }
+
+      // 节目表界面：自管光标（select 由焦点陷阱 Pressable 的 onPress 处理，避免重复）
+      switch (type) {
+        case "up":
+          moveCursor(-1);
+          break;
+        case "down":
+          moveCursor(1);
+          break;
+        case "left":
+          changeGroup(-1);
+          break;
+        case "right":
+          changeGroup(1);
+          break;
+        case "longUp":
+          action === 0 ? startFast(-1) : stopFast();
+          break;
+        case "longDown":
+          action === 0 ? startFast(1) : stopFast();
+          break;
+      }
     },
-    [changeChannel, isChannelListVisible, deviceType]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [deviceType, isChannelListVisible, changeChannel]
   );
 
-  useTVEventHandler(deviceType === 'tv' ? handleTVEvent : () => {});
+  useTVEventHandler(deviceType === "tv" ? handleTVEvent : () => {});
 
   // 动态样式
   const dynamicStyles = createResponsiveStyles(deviceType, spacing);
@@ -219,21 +320,33 @@ export default function LiveScreen() {
       >
         <View style={dynamicStyles.modalContainer}>
           <View style={dynamicStyles.modalContent}>
-            <Text style={dynamicStyles.modalTitle}>选择频道</Text>
+            {/* 焦点陷阱：唯一可聚焦元素，确保方向键事件交给我们自管、OK 触发选择 */}
+            <Pressable
+              focusable
+              hasTVPreferredFocus
+              onPress={confirmSelect}
+              style={styles.focusTrap}
+            />
+            <Text style={dynamicStyles.modalTitle}>选择频道（左右切换分类 · 上下选频道 · 确认播放）</Text>
             <View style={dynamicStyles.listContainer}>
               <View style={dynamicStyles.groupColumn}>
                 <FlatList
                   data={channelGroups}
                   keyExtractor={(item, index) => `group-${item}-${index}`}
-                  renderItem={({ item }) => (
-                    <StyledButton
-                      text={item}
-                      onPress={() => setSelectedGroup(item)}
-                      isSelected={selectedGroup === item}
-                      style={dynamicStyles.groupButton}
-                      textStyle={dynamicStyles.groupButtonText}
-                    />
-                  )}
+                  extraData={selectedGroup}
+                  renderItem={({ item }) => {
+                    const active = selectedGroup === item;
+                    return (
+                      <View style={[dynamicStyles.groupRow, active && styles.rowActive]}>
+                        <Text
+                          numberOfLines={1}
+                          style={[dynamicStyles.groupRowText, active && styles.rowActiveText]}
+                        >
+                          {item}
+                        </Text>
+                      </View>
+                    );
+                  }}
                 />
               </View>
               <View style={dynamicStyles.channelColumn}>
@@ -242,39 +355,42 @@ export default function LiveScreen() {
                 ) : (
                   <FlatList
                     ref={channelListRef}
-                    data={groupedChannels[selectedGroup] || []}
-                    keyExtractor={(item, index) => `${item.id}-${item.group}-${index}`}
-                    // 让长按上下键时有更多已渲染的项，滚动/换焦更跟手
+                    data={currentGroupList}
+                    keyExtractor={(item, index) => `${item.id}-${index}`}
+                    extraData={`${listSelectedIndex}-${currentChannelIndex}`}
+                    getItemLayout={(_, index) => ({
+                      length: CHANNEL_ROW_HEIGHT,
+                      offset: CHANNEL_ROW_HEIGHT * index,
+                      index,
+                    })}
                     initialNumToRender={20}
                     maxToRenderPerBatch={20}
                     windowSize={15}
-                    updateCellsBatchingPeriod={30}
-                    onScrollToIndexFailed={(info) => {
-                      // 目标项还没渲染时：先按估算高度滚到大概位置，渲染后再精确定位
-                      channelListRef.current?.scrollToOffset({
-                        offset: info.averageItemLength * info.index,
-                        animated: false,
-                      });
-                      setTimeout(() => {
-                        try {
-                          channelListRef.current?.scrollToIndex({
-                            index: info.index,
-                            animated: false,
-                            viewPosition: 0.5,
-                          });
-                        } catch {}
-                      }, 120);
+                    renderItem={({ item, index }) => {
+                      const isCursor = index === listSelectedIndex;
+                      const isPlaying = channels[currentChannelIndex]?.id === item.id;
+                      return (
+                        <View
+                          style={[
+                            dynamicStyles.channelRow,
+                            { height: CHANNEL_ROW_HEIGHT },
+                            isCursor && styles.rowActive,
+                          ]}
+                        >
+                          {isPlaying && <View style={styles.playingDot} />}
+                          <Text
+                            numberOfLines={1}
+                            style={[
+                              dynamicStyles.channelRowText,
+                              isCursor && styles.rowActiveText,
+                              isPlaying && !isCursor && styles.playingText,
+                            ]}
+                          >
+                            {item.name || "未知频道"}
+                          </Text>
+                        </View>
+                      );
                     }}
-                    renderItem={({ item }) => (
-                      <StyledButton
-                        text={item.name || "Unknown Channel"}
-                        onPress={() => handleSelectChannel(item)}
-                        isSelected={channels[currentChannelIndex]?.id === item.id}
-                        hasTVPreferredFocus={channels[currentChannelIndex]?.id === item.id}
-                        style={dynamicStyles.channelItem}
-                        textStyle={dynamicStyles.channelItemText}
-                      />
-                    )}
                   />
                 )}
               </View>
@@ -325,6 +441,30 @@ const styles = StyleSheet.create({
     textAlign: "center",
     lineHeight: 20,
   },
+  focusTrap: {
+    position: "absolute",
+    width: 1,
+    height: 1,
+    opacity: 0,
+  },
+  rowActive: {
+    backgroundColor: Colors.dark.primary,
+    borderRadius: 6,
+  },
+  rowActiveText: {
+    color: "#fff",
+    fontWeight: "bold",
+  },
+  playingDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: Colors.dark.primary,
+    marginRight: 8,
+  },
+  playingText: {
+    color: Colors.dark.primary,
+  },
 });
 
 const createResponsiveStyles = (deviceType: string, spacing: number) => {
@@ -368,23 +508,26 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
     channelColumn: {
       flex: isMobile ? 1 : 2,
     },
-    groupButton: {
-      paddingVertical: isMobile ? minTouchTarget / 4 : 8,
+    groupRow: {
+      paddingVertical: 8,
       paddingHorizontal: spacing / 2,
-      marginVertical: isMobile ? 2 : 4,
-      minHeight: isMobile ? minTouchTarget * 0.7 : undefined,
+      marginVertical: 3,
+      borderRadius: 6,
+      justifyContent: "center",
     },
-    groupButtonText: {
+    groupRowText: {
       fontSize: isMobile ? 14 : 13,
+      color: "#ddd",
     },
-    channelItem: {
-      paddingVertical: isMobile ? minTouchTarget / 5 : 6,
+    channelRow: {
+      flexDirection: "row",
+      alignItems: "center",
       paddingHorizontal: spacing,
-      marginVertical: isMobile ? 2 : 3,
-      minHeight: isMobile ? minTouchTarget * 0.8 : undefined,
     },
-    channelItemText: {
-      fontSize: isMobile ? 14 : 12,
+    channelRowText: {
+      fontSize: isMobile ? 14 : 13,
+      color: "#ddd",
+      flexShrink: 1,
     },
   });
 };
