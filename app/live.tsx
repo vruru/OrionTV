@@ -222,7 +222,12 @@ export default function LiveScreen() {
     }, 0);
   };
 
+  // 防止一次按键触发多次（select/longSelect 可能连续到达）
+  const lastConfirmRef = useRef(0);
   const confirmSelect = () => {
+    const now = Date.now();
+    if (now - lastConfirmRef.current < 400) return;
+    lastConfirmRef.current = now;
     const ch = groupListRef.current[cursorRef.current];
     if (ch) handleSelectChannel(ch);
   };
@@ -260,8 +265,13 @@ export default function LiveScreen() {
         return;
       }
 
-      // 节目表界面：自管光标（select 由焦点陷阱 Pressable 的 onPress 处理，避免重复）
+      // 节目表界面：方向键与确认键都由这里自管（隐藏的焦点陷阱视图无法可靠收到
+      // 确认键的 onPress，所以 select 必须在这里处理）
       switch (type) {
+        case "select":
+        case "longSelect":
+          confirmSelect();
+          break;
         case "up":
           moveCursor(-1);
           break;
@@ -320,13 +330,9 @@ export default function LiveScreen() {
       >
         <View style={dynamicStyles.modalContainer}>
           <View style={dynamicStyles.modalContent}>
-            {/* 焦点陷阱：唯一可聚焦元素，确保方向键事件交给我们自管、OK 触发选择 */}
-            <Pressable
-              focusable
-              hasTVPreferredFocus
-              onPress={confirmSelect}
-              style={styles.focusTrap}
-            />
+            {/* 焦点陷阱：唯一可聚焦元素，兜住焦点避免系统焦点乱跳。
+                按键处理（含确认键）统一在 handleTVEvent 里完成。 */}
+            <Pressable focusable hasTVPreferredFocus style={styles.focusTrap} />
             <Text style={dynamicStyles.modalTitle}>选择频道（左右切换分类 · 上下选频道 · 确认播放）</Text>
             <View style={dynamicStyles.listContainer}>
               <View style={dynamicStyles.groupColumn}>
