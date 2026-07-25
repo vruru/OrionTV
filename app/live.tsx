@@ -48,6 +48,7 @@ export default function LiveScreen() {
   const [isChannelListVisible, setIsChannelListVisible] = useState(false);
   const [channelTitle, setChannelTitle] = useState<string | null>(null);
   const titleTimer = useRef<NodeJS.Timeout | null>(null);
+  const channelListRef = useRef<FlatList<Channel>>(null);
 
   const selectedChannelUrl = channels.length > 0 ? getPlayableUrl(channels[currentChannelIndex].url) : null;
 
@@ -125,14 +126,29 @@ export default function LiveScreen() {
     titleTimer.current = setTimeout(() => setChannelTitle(null), 3000);
   };
 
-  // 打开频道列表时，定位到当前正在播放的频道所在分组（默认不再总是显示第一个）
+  // 打开频道列表时，定位到当前正在播放的频道：切到它所在分组，并把列表滚动到该
+  // 频道处（虚拟列表不会渲染很靠后的项，仅靠 hasTVPreferredFocus 定位不到，必须
+  // 主动 scrollToIndex）。
   useEffect(() => {
-    if (isChannelListVisible && channels.length > 0) {
-      const current = channels[currentChannelIndex];
-      if (current) {
-        setSelectedGroup(current.group || "Other");
+    if (!isChannelListVisible || channels.length === 0) return;
+    const current = channels[currentChannelIndex];
+    if (!current) return;
+    const group = current.group || "Other";
+    setSelectedGroup(group);
+
+    const list = groupedChannels[group] || [];
+    const idx = list.findIndex((c) => c.id === current.id);
+    if (idx <= 0) return; // 第一个或找不到，无需滚动
+
+    // 等分组列表渲染后再滚动到当前频道
+    const t = setTimeout(() => {
+      try {
+        channelListRef.current?.scrollToIndex({ index: idx, animated: false, viewPosition: 0.5 });
+      } catch {
+        // 由 onScrollToIndexFailed 兜底
       }
-    }
+    }, 250);
+    return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isChannelListVisible]);
 
@@ -225,6 +241,7 @@ export default function LiveScreen() {
                   <ActivityIndicator size="large" />
                 ) : (
                   <FlatList
+                    ref={channelListRef}
                     data={groupedChannels[selectedGroup] || []}
                     keyExtractor={(item, index) => `${item.id}-${item.group}-${index}`}
                     // 让长按上下键时有更多已渲染的项，滚动/换焦更跟手
@@ -232,6 +249,22 @@ export default function LiveScreen() {
                     maxToRenderPerBatch={20}
                     windowSize={15}
                     updateCellsBatchingPeriod={30}
+                    onScrollToIndexFailed={(info) => {
+                      // 目标项还没渲染时：先按估算高度滚到大概位置，渲染后再精确定位
+                      channelListRef.current?.scrollToOffset({
+                        offset: info.averageItemLength * info.index,
+                        animated: false,
+                      });
+                      setTimeout(() => {
+                        try {
+                          channelListRef.current?.scrollToIndex({
+                            index: info.index,
+                            animated: false,
+                            viewPosition: 0.5,
+                          });
+                        } catch {}
+                      }, 120);
+                    }}
                     renderItem={({ item }) => (
                       <StyledButton
                         text={item.name || "Unknown Channel"}
