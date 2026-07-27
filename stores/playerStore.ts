@@ -554,13 +554,25 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   cancelPreview: () => set({ isPreviewing: false }),
 
   setPlaybackRate: async (rate) => {
-    const { videoRef } = get();
+    const { videoRef, status } = get();
     const detail = useDetailStore.getState().detail;
-    
+
+    // Update state first so the UI reflects the choice immediately.
+    set({ playbackRate: rate });
+
     try {
-      await videoRef?.current?.setRateAsync(rate, true);
-      set({ playbackRate: rate });
-      
+      const wasPlaying = status?.isLoaded ? status.isPlaying : true;
+      // Apply rate in ONE authoritative call. Pitch correction is disabled: on
+      // Android the pitch-correcting resampler is what makes non-1x playback
+      // stutter on TV boxes. Also re-assert shouldPlay so the decoder resyncs
+      // after the rate change — otherwise playback stays choppy even back at 1x
+      // until the user manually pauses/resumes.
+      await videoRef?.current?.setStatusAsync({
+        rate,
+        shouldCorrectPitch: false,
+        shouldPlay: wasPlaying,
+      });
+
       // Save the playback rate preference
       if (detail) {
         await PlayerSettingsManager.save(detail.source, detail.id.toString(), { playbackRate: rate });

@@ -48,7 +48,13 @@ export const useVideoHandlers = ({
       // rate 属性有时不会自动生效，这里显式设置以保证倍速持续有效。
       if (playbackRate && playbackRate !== 1.0) {
         try {
-          await videoRef.current?.setRateAsync(playbackRate, true);
+          // shouldCorrectPitch:false — pitch correction is the main cause of
+          // stuttering at non-1x rates on Android TV boxes.
+          await videoRef.current?.setStatusAsync({
+            rate: playbackRate,
+            shouldCorrectPitch: false,
+            shouldPlay: true,
+          });
           console.info(`[RATE] Re-applied playback rate ${playbackRate}x after onLoad`);
         } catch (rateError) {
           console.warn(`[RATE] Failed to re-apply playback rate:`, rateError);
@@ -118,7 +124,11 @@ export const useVideoHandlers = ({
     source: { uri: currentEpisode?.url || '' },
     posterSource: { uri: detail?.poster ?? "" },
     resizeMode: ResizeMode.CONTAIN,
-    rate: playbackRate,
+    // NOTE: `rate` is deliberately NOT passed as a prop. The declarative prop
+    // fights the imperative setStatusAsync call (each render re-applies it and
+    // reconfigures the decoder), which caused stuttering at non-1x rates.
+    // Rate is applied imperatively in onLoad and in setPlaybackRate.
+    progressUpdateIntervalMillis: 1000,
     onPlaybackStatusUpdate: handlePlaybackStatusUpdate,
     onLoad,
     onLoadStart,
@@ -128,7 +138,6 @@ export const useVideoHandlers = ({
   }), [
     currentEpisode?.url,
     detail?.poster,
-    playbackRate,
     handlePlaybackStatusUpdate,
     onLoad,
     onLoadStart,
