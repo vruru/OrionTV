@@ -48,11 +48,11 @@ export const useVideoHandlers = ({
       // rate 属性有时不会自动生效，这里显式设置以保证倍速持续有效。
       if (playbackRate && playbackRate !== 1.0) {
         try {
-          // shouldCorrectPitch:false — pitch correction is the main cause of
-          // stuttering at non-1x rates on Android TV boxes.
+          // shouldCorrectPitch:true keeps speech natural (ExoPlayer Sonic
+          // time-stretching); false would make pitch follow the rate.
           await videoRef.current?.setStatusAsync({
             rate: playbackRate,
-            shouldCorrectPitch: false,
+            shouldCorrectPitch: true,
             shouldPlay: true,
           });
           console.info(`[RATE] Re-applied playback rate ${playbackRate}x after onLoad`);

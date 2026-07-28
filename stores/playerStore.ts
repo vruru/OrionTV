@@ -562,14 +562,17 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
 
     try {
       const wasPlaying = status?.isLoaded ? status.isPlaying : true;
-      // Apply rate in ONE authoritative call. Pitch correction is disabled: on
-      // Android the pitch-correcting resampler is what makes non-1x playback
-      // stutter on TV boxes. Also re-assert shouldPlay so the decoder resyncs
-      // after the rate change — otherwise playback stays choppy even back at 1x
-      // until the user manually pauses/resumes.
+      // Apply rate in ONE authoritative call.
+      // shouldCorrectPitch:true — on Android this maps to
+      // PlaybackParameters(rate, pitch=1.0), i.e. ExoPlayer's Sonic
+      // time-stretching, which keeps speech natural. Setting it false makes
+      // pitch follow the rate (tape-fast-forward chipmunk effect).
+      // Also re-assert shouldPlay so the decoder resyncs after the rate change —
+      // otherwise playback stays choppy (even back at 1x) until a manual
+      // pause/resume.
       await videoRef?.current?.setStatusAsync({
         rate,
-        shouldCorrectPitch: false,
+        shouldCorrectPitch: true,
         shouldPlay: wasPlaying,
       });
 
