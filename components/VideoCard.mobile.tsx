@@ -26,6 +26,13 @@ interface VideoCardMobileProps extends React.ComponentProps<typeof TouchableOpac
   totalEpisodes?: number;
   onFocus?: () => void;
   onRecordDeleted?: () => void;
+  // 自定义长按删除行为（如收藏页删除收藏），优先于内置的“删除观看记录”逻辑
+  onCustomDelete?: {
+    title: string;
+    message: string;
+    onConfirm: () => Promise<void> | void;
+    onCompleted?: () => void;
+  };
   api: API;
 }
 
@@ -43,6 +50,7 @@ const VideoCardMobile = forwardRef<View, VideoCardMobileProps>(
       episodeIndex,
       onFocus,
       onRecordDeleted,
+      onCustomDelete,
       api,
       playTime = 0,
     }: VideoCardMobileProps,
@@ -83,9 +91,33 @@ const VideoCardMobile = forwardRef<View, VideoCardMobileProps>(
     }, [fadeAnim]);
 
     const handleLongPress = () => {
-      if (progress === undefined) return;
+      // 有播放进度（观看记录）或配置了自定义删除（如收藏页）时才允许长按
+      if (progress === undefined && !onCustomDelete) return;
 
       longPressTriggered.current = true;
+
+      if (onCustomDelete) {
+        Alert.alert(onCustomDelete.title, onCustomDelete.message, [
+          {
+            text: "取消",
+            style: "cancel",
+          },
+          {
+            text: "删除",
+            style: "destructive",
+            onPress: async () => {
+              try {
+                await onCustomDelete.onConfirm();
+                onCustomDelete.onCompleted?.();
+              } catch (error) {
+                logger.info("Failed to perform custom delete:", error);
+                Alert.alert("错误", "操作失败，请重试");
+              }
+            },
+          },
+        ]);
+        return;
+      }
 
       Alert.alert("删除观看记录", `确定要删除"${title}"的观看记录吗？`, [
         {

@@ -6,9 +6,10 @@ interface FavoritesState {
   loading: boolean;
   error: string | null;
   fetchFavorites: () => Promise<void>;
+  removeFavorite: (key: string) => Promise<void>;
 }
 
-const useFavoritesStore = create<FavoritesState>((set) => ({
+const useFavoritesStore = create<FavoritesState>((set, get) => ({
   favorites: [],
   loading: false,
   error: null,
@@ -26,6 +27,12 @@ const useFavoritesStore = create<FavoritesState>((set) => ({
       const error = e instanceof Error ? e.message : "获取收藏列表失败";
       set({ error, loading: false });
     }
+  },
+  removeFavorite: async (key: string) => {
+    const [source, id] = key.split("+");
+    await FavoriteManager.remove(source, id);
+    // 本地先行移除，避免整表重新拉取造成的闪烁
+    set({ favorites: get().favorites.filter((f) => f.key !== key) });
   },
 }));
 
