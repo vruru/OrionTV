@@ -38,6 +38,9 @@ jobs:
 
       - name: Build TV APK
         run: yarn build
+        env:
+          # 兜底：未配置 Sentry 组织时禁用构建期 sourcemap 自动上传
+          SENTRY_DISABLE_AUTO_UPLOAD: "true"
 
       - name: Rename APK file
         run: |

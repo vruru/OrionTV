@@ -30,7 +30,14 @@
         }
       ],
       "expo-router",
-      "@sentry/react-native/expo"
+      [
+        "@sentry/react-native/expo",
+        {
+          // 未配置 Sentry 组织（运行时默认关闭），禁用构建期 sourcemap 自动上传，
+          // 否则 release 构建因缺 org slug 失败
+          "disableAutoUpload": true
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
