@@ -15,6 +15,14 @@ interface LoggerOptions {
   level?: LogLevel;
 }
 
+// 错误上报通道：生产环境 console 静默时，error 级别仍可通过该通道送到监控平台（如 Sentry）。
+// 通过 setErrorSink 注册；默认 null，零开销。
+let errorSink: ((message: string) => void) | null = null;
+
+export function setErrorSink(sink: ((message: string) => void) | null): void {
+  errorSink = sink;
+}
+
 class LoggerClass {
   private minLevel: LogLevel = LogLevel.DEBUG;
 
@@ -112,6 +120,19 @@ class LoggerClass {
   error(message: any, ...args: any[]): void;
   error(options: LoggerOptions, message: any, ...args: any[]): void;
   error(optionsOrMessage: LoggerOptions | any, message?: any, ...args: any[]): void {
+    // 生产环境也把 error 级别送到已注册的上报通道（如 Sentry）
+    if (errorSink) {
+      try {
+        const msg =
+          typeof optionsOrMessage === "object" && optionsOrMessage?.tag !== undefined
+            ? `[${optionsOrMessage.tag}] ${String(message)}`
+            : String(optionsOrMessage);
+        errorSink(msg);
+      } catch {
+        // 上报失败不影响主流程
+      }
+    }
+
     if (!__DEV__) return;
 
     if (this.minLevel > LogLevel.ERROR) return;

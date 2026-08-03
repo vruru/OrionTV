@@ -314,6 +314,22 @@ export class SearchHistoryManager {
     await api.addSearchHistory(trimmed);
   }
 
+  /** 删除单条搜索历史 */
+  static async remove(keyword: string): Promise<void> {
+    const trimmed = keyword.trim();
+    if (!trimmed) return;
+
+    if (this.getStorageType() === "localstorage") {
+      const history = await this.get();
+      await AsyncStorage.setItem(
+        STORAGE_KEYS.SEARCH_HISTORY,
+        JSON.stringify(history.filter((k) => k !== trimmed))
+      );
+      return;
+    }
+    await api.deleteSearchHistory(trimmed);
+  }
+
   static async clear(): Promise<void> {
     if (this.getStorageType() === "localstorage") {
       await AsyncStorage.removeItem(STORAGE_KEYS.SEARCH_HISTORY);

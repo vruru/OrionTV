@@ -22,6 +22,14 @@ interface VideoCardProps extends React.ComponentProps<typeof TouchableOpacity> {
   totalEpisodes?: number;
   onFocus?: () => void;
   onRecordDeleted?: () => void;
+  // 自定义长按删除行为（如收藏页删除收藏）。提供后优先于内置的“删除观看记录”逻辑，
+  // 且不再要求 progress 必须存在。
+  onCustomDelete?: {
+    title: string;
+    message: string;
+    onConfirm: () => Promise<void> | void;
+    onCompleted?: () => void;
+  };
   api: API;
 }
 

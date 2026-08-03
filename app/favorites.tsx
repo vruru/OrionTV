@@ -13,7 +13,7 @@ import ResponsiveNavigation from "@/components/navigation/ResponsiveNavigation";
 import ResponsiveHeader from "@/components/navigation/ResponsiveHeader";
 
 export default function FavoritesScreen() {
-  const { favorites, loading, error, fetchFavorites } = useFavoritesStore();
+  const { favorites, loading, error, fetchFavorites, removeFavorite } = useFavoritesStore();
 
   // 响应式布局配置
   const responsiveConfig = useResponsiveLayout();
@@ -37,6 +37,11 @@ export default function FavoritesScreen() {
         api={api}
         episodeIndex={1}
         progress={0}
+        onCustomDelete={{
+          title: "删除收藏",
+          message: `确定要删除"${item.title}"的收藏吗？`,
+          onConfirm: () => removeFavorite(item.key),
+        }}
       />
     );
   };

@@ -25,6 +25,13 @@ interface VideoCardProps extends React.ComponentProps<typeof TouchableOpacity> {
   totalEpisodes?: number; // 总集数
   onFocus?: () => void;
   onRecordDeleted?: () => void; // 添加回调属性
+  // 自定义长按删除行为（如收藏页删除收藏），优先于内置的“删除观看记录”逻辑
+  onCustomDelete?: {
+    title: string;
+    message: string;
+    onConfirm: () => Promise<void> | void;
+    onCompleted?: () => void;
+  };
   api: API;
 }
 
@@ -42,6 +49,7 @@ const VideoCard = forwardRef<View, VideoCardProps>(
       episodeIndex,
       onFocus,
       onRecordDeleted,
+      onCustomDelete,
       api,
       playTime = 0,
     }: VideoCardProps,
@@ -111,9 +119,9 @@ const VideoCard = forwardRef<View, VideoCardProps>(
       }).start();
     }, [fadeAnim]);
 
-    // 弹出“删除观看记录”确认框（仅对有播放进度的最近播放项目有效）
+    // 删除确认框：优先使用自定义删除（如收藏页），否则回退到内置的“删除观看记录”
     const showDeleteDialog = useCallback(() => {
-      if (progress === undefined) return;
+      if (progress === undefined && !onCustomDelete) return;
       // 已经弹出一个了就不再重复弹（长按/菜单键可能连续触发多次）
       if (dialogOpenRef.current) return;
       dialogOpenRef.current = true;
@@ -121,6 +129,36 @@ const VideoCard = forwardRef<View, VideoCardProps>(
       const release = () => {
         dialogOpenRef.current = false;
       };
+
+      if (onCustomDelete) {
+        Alert.alert(
+          onCustomDelete.title,
+          onCustomDelete.message,
+          [
+            {
+              text: "取消",
+              style: "cancel",
+              onPress: release,
+            },
+            {
+              text: "删除",
+              style: "destructive",
+              onPress: async () => {
+                release();
+                try {
+                  await onCustomDelete.onConfirm();
+                  onCustomDelete.onCompleted?.();
+                } catch (error) {
+                  logger.info("Failed to perform custom delete:", error);
+                  Alert.alert("错误", "操作失败，请重试");
+                }
+              },
+            },
+          ],
+          { cancelable: true, onDismiss: release }
+        );
+        return;
+      }
 
       Alert.alert(
         "删除观看记录",
@@ -152,26 +190,26 @@ const VideoCard = forwardRef<View, VideoCardProps>(
         ],
         { cancelable: true, onDismiss: release }
       );
-    }, [progress, title, source, id, onRecordDeleted, router]);
+    }, [progress, title, source, id, onRecordDeleted, onCustomDelete, router]);
 
     const handleLongPress = () => {
-      // Only allow long press for items with progress (play records)
-      if (progress === undefined) return;
+      // 有播放进度（观看记录）或配置了自定义删除（如收藏页）时才允许长按
+      if (progress === undefined && !onCustomDelete) return;
       longPressTriggered.current = true;
       showDeleteDialog();
     };
 
-    // 遥控器“菜单键”：当当前卡片获得焦点时，弹出删除该最近播放记录的菜单。
+    // 遥控器“菜单键”：当当前卡片获得焦点时，弹出删除菜单。
     const handleTVEvent = useCallback(
       (event: any) => {
-        if (deviceType !== "tv" || !isFocused || progress === undefined) return;
+        if (deviceType !== "tv" || !isFocused || (progress === undefined && !onCustomDelete)) return;
         const type = event?.eventType;
         // 只用菜单键触发；长按 OK 由 Pressable.onLongPress 处理，避免重复弹窗。
         if (type === "menu" || type === "contextMenu") {
           showDeleteDialog();
         }
       },
-      [deviceType, isFocused, progress, showDeleteDialog]
+      [deviceType, isFocused, progress, onCustomDelete, showDeleteDialog]
     );
     useTVEventHandler(handleTVEvent);
 
