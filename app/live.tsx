@@ -59,6 +59,22 @@ const formatReplayRowTime = (p: EpgProgramme): string => {
   return `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${formatProgrammeTime(p)}`;
 };
 
+// 本地日期 key（如 "2026-8-3"）：回看节目单按天分组的依据
+const dayKeyOf = (ms: number): string => {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+};
+
+// 日期标签：今天/昨天/前天，其余显示 MM-DD
+const replayDayLabel = (key: string): string => {
+  const now = Date.now();
+  if (key === dayKeyOf(now)) return "今天";
+  if (key === dayKeyOf(now - 86400000)) return "昨天";
+  if (key === dayKeyOf(now - 2 * 86400000)) return "前天";
+  const [, m, d] = key.split("-");
+  return `${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+};
+
 export default function LiveScreen() {
   const { m3uUrl, apiBaseUrl, epgUrl, replayServerUrl, remoteInputEnabled } = useSettingsStore();
   const { favoriteIds, load: loadFavorites, toggle: toggleFavorite } = useLiveFavoritesStore();
@@ -86,13 +102,18 @@ export default function LiveScreen() {
   const [replayCursor, setReplayCursor] = useState(0);
   // 无 EPG 频道的兜底：按录制覆盖生成的小时块时段单（有值时优先于 EPG 节目单）
   const [replayBlocks, setReplayBlocks] = useState<EpgProgramme[] | null>(null);
-  const [replaySession, setReplaySession] = useState<{ url: string; title: string; channelName: string; channel: Channel } | null>(null);
+  // 节目单按天分组：当前日期下标（面板左右键切换日期）
+  const [replayDateIdx, setReplayDateIdx] = useState(0);
+  const [replaySession, setReplaySession] = useState<{ url: string; title: string; channelName: string; channel: Channel; list: EpgProgramme[]; index: number } | null>(null);
   const replayCursorRef = useRef(0);
   const replayListRef = useRef<FlashList<EpgProgramme>>(null);
   // handleTVEvent 的 useCallback 依赖不含这些 state，闭包通过 ref 读最新值
   const replayChannelRef = useRef<Channel | null>(null);
   const replayProgrammesRef = useRef<EpgProgramme[]>([]);
-  const replaySessionRef = useRef<{ url: string; title: string; channelName: string; channel: Channel } | null>(null);
+  const replayDatesRef = useRef<string[]>([]);
+  const replayDateIdxRef = useRef(0);
+  const replayFullListRef = useRef<EpgProgramme[]>([]);
+  const replaySessionRef = useRef<{ url: string; title: string; channelName: string; channel: Channel; list: EpgProgramme[]; index: number } | null>(null);
   const epgDataRef = useRef<EpgData | null>(null);
   const recordedChannelsRef = useRef<Set<string>>(new Set());
   // 频道搜索：有关键词时节目表切换为跨分组搜索结果模式
@@ -311,13 +332,26 @@ export default function LiveScreen() {
     return prog ? `${channel.name} · ${prog.title}（${formatProgrammeTime(prog)}）` : channel.name;
   };
 
-  // 回看：目标频道的完整节目单（EPG 含 78h 回溯窗口）；无 EPG 时用录制时段块兜底
+  // 回看：目标频道的完整节目单（EPG 含 54h 回溯窗口）；无 EPG 时用录制时段块兜底
   const replayProgrammes = useMemo<EpgProgramme[]>(() => {
     if (!replayChannel) return [];
     if (replayBlocks) return replayBlocks;
     return findEpgProgrammes(epgData, replayChannel);
   }, [epgData, replayChannel, replayBlocks]);
-  replayProgrammesRef.current = replayProgrammes;
+  replayFullListRef.current = replayProgrammes;
+
+  // 按天分组的日期列表与当前日期的节目子集（面板左右键切换日期）
+  const replayDates = useMemo(
+    () => [...new Set(replayProgrammes.map((p) => dayKeyOf(p.start)))],
+    [replayProgrammes]
+  );
+  replayDatesRef.current = replayDates;
+  replayDateIdxRef.current = replayDateIdx;
+  const replayDayList = useMemo(() => {
+    const key = replayDates[replayDateIdx];
+    return key ? replayProgrammes.filter((p) => dayKeyOf(p.start) === key) : [];
+  }, [replayProgrammes, replayDates, replayDateIdx]);
+  replayProgrammesRef.current = replayDayList;
 
   const closeReplay = () => {
     setReplayChannel(null);
@@ -336,8 +370,16 @@ export default function LiveScreen() {
       }
       if (idx === -1) idx = 0;
     }
-    replayCursorRef.current = idx;
-    setReplayCursor(idx);
+    // 定位到光标节目所在的日期，光标改为当日列表内的下标
+    const dayKey = dayKeyOf(list[idx].start);
+    const dates = [...new Set(list.map((p) => dayKeyOf(p.start)))];
+    const dateIdx = Math.max(0, dates.indexOf(dayKey));
+    const dayList = list.filter((p) => dayKeyOf(p.start) === dayKey);
+    replayDateIdxRef.current = dateIdx;
+    setReplayDateIdx(dateIdx);
+    const cursor = Math.max(0, dayList.indexOf(list[idx]));
+    replayCursorRef.current = cursor;
+    setReplayCursor(cursor);
     setReplayBlocks(isBlocks ? list : null);
     setReplayChannel(channel);
   };
@@ -385,6 +427,33 @@ export default function LiveScreen() {
     openReplayWithList(channel, list, false);
   };
 
+  // 面板左右键：切换日期；光标落在当日第一个未播完节目，否则当日最后一个
+  const changeReplayDate = (delta: number) => {
+    const dates = replayDatesRef.current;
+    if (dates.length <= 1) return;
+    let ni = replayDateIdxRef.current + delta;
+    if (ni < 0) ni = 0;
+    if (ni > dates.length - 1) ni = dates.length - 1;
+    if (ni === replayDateIdxRef.current) return;
+    const dayKey = dates[ni];
+    const dayList = replayFullListRef.current.filter((p) => dayKeyOf(p.start) === dayKey);
+    if (dayList.length === 0) return;
+    replayDateIdxRef.current = ni;
+    setReplayDateIdx(ni);
+    const now = Date.now();
+    let ci = dayList.findIndex((p) => p.stop > now);
+    if (ci === -1) ci = dayList.length - 1;
+    replayCursorRef.current = ci;
+    setReplayCursor(ci);
+    setTimeout(() => {
+      try {
+        replayListRef.current?.scrollToIndex({ index: ci, animated: false, viewPosition: 0.5 });
+      } catch {
+        // 列表重渲染竞态可忽略
+      }
+    }, 80);
+  };
+
   const moveReplayCursor = (delta: number) => {
     const list = replayProgrammesRef.current;
     if (list.length === 0) return;
@@ -402,7 +471,7 @@ export default function LiveScreen() {
   };
 
   // 选中节目开始回看：只播已播完的时间窗（正在播/未播的节目没有完整录像）
-  const playReplay = (prog: EpgProgramme) => {
+  const playReplay = (prog: EpgProgramme, list?: EpgProgramme[], index?: number) => {
     const channel = replayChannelRef.current;
     const serverUrl = useSettingsStore.getState().replayServerUrl;
     if (!channel || !serverUrl) return;
@@ -411,11 +480,36 @@ export default function LiveScreen() {
       return;
     }
     const url = buildReplayUrl(serverUrl, channel.name, prog.start, prog.stop);
-    setReplaySession({ url, title: prog.title, channelName: channel.name, channel });
+    setReplaySession({
+      url,
+      title: prog.title,
+      channelName: channel.name,
+      channel,
+      list: list ?? [prog],
+      index: index ?? 0,
+    });
     closeReplay();
   };
 
-  const exitReplay = () => setReplaySession(null);
+  // 回看播放中按左右键：切到当前频道的上一个/下一个可回看节目
+  const stepReplayProgramme = (delta: number) => {
+    const sess = replaySessionRef.current;
+    if (!sess) return;
+    const ni = sess.index + delta;
+    if (ni < 0 || ni >= sess.list.length) {
+      Toast.show({ type: "info", text1: delta < 0 ? "已是最早的可回看内容" : "已是最新的可回看内容" });
+      return;
+    }
+    const prog = sess.list[ni];
+    if (prog.stop > Date.now()) {
+      Toast.show({ type: "info", text1: "节目尚未播完，暂不可回看" });
+      return;
+    }
+    const serverUrl = useSettingsStore.getState().replayServerUrl;
+    if (!serverUrl) return;
+    const url = buildReplayUrl(serverUrl, sess.channel.name, prog.start, prog.stop);
+    setReplaySession({ ...sess, url, title: prog.title, index: ni });
+  };
 
   // 收藏/取消收藏并给出反馈
   const toggleFavoriteAndToast = async (channel: Channel) => {
@@ -610,15 +704,22 @@ export default function LiveScreen() {
             if (action === 0) break;
             if (Date.now() - lastLongSelectRef.current < 600) break;
             const prog = replayProgrammesRef.current[replayCursorRef.current];
-            if (prog) playReplay(prog);
+            // 会话里保存完整列表与全表下标：回看中左右键换节目可跨日期
+            if (prog) playReplay(prog, replayFullListRef.current, replayFullListRef.current.indexOf(prog));
             break;
           }
           case "longSelect": {
             lastLongSelectRef.current = Date.now();
             const prog = replayProgrammesRef.current[replayCursorRef.current];
-            if (prog) playReplay(prog);
+            if (prog) playReplay(prog, replayFullListRef.current, replayFullListRef.current.indexOf(prog));
             break;
           }
+          case "left":
+            changeReplayDate(-1);
+            break;
+          case "right":
+            changeReplayDate(1);
+            break;
           case "menu":
           case "contextMenu":
           case "back":
@@ -633,11 +734,12 @@ export default function LiveScreen() {
         // 菜单键退出回看，加载失败时确认键重试当前流
         if (type === "down") setIsChannelListVisible(true);
         else if (type === "left") {
-          exitReplay();
-          changeChannel("prev");
+          // 回看播放中：左右键切上/下一个回看节目；直播时才是换台
+          if (replaySessionRef.current) stepReplayProgramme(-1);
+          else changeChannel("prev");
         } else if (type === "right") {
-          exitReplay();
-          changeChannel("next");
+          if (replaySessionRef.current) stepReplayProgramme(1);
+          else changeChannel("next");
         } else if (type === "up") cycleResizeModeWithToast();
         else if (type === "menu" || type === "contextMenu") {
           // 回看播放中按菜单键：直接打开该频道的节目单（方便接着选下一集）
@@ -892,14 +994,16 @@ export default function LiveScreen() {
             {/* 焦点陷阱：与频道表同一套自管按键方案（handleTVEvent） */}
             <Pressable focusable hasTVPreferredFocus style={styles.focusTrap} />
             <Text style={styles.replayTitle} numberOfLines={1}>
-              {replayChannel ? `${replayChannel.name} · 节目单` : ""}
+              {replayChannel
+                ? `${replayChannel.name} · ${replayDates[replayDateIdx] ? replayDayLabel(replayDates[replayDateIdx]) : "节目单"}`
+                : ""}
             </Text>
-            <Text style={styles.replayHint}>确认键回看已播节目 · 菜单键/返回键关闭</Text>
+            <Text style={styles.replayHint}>左右键切换日期 · 确认键回看 · 菜单键/返回键关闭</Text>
             <FlashList
               ref={replayListRef}
-              data={replayProgrammes}
+              data={replayDayList}
               keyExtractor={(item, index) => `${item.start}-${index}`}
-              extraData={replayCursor}
+              extraData={`${replayCursor}-${replayDateIdx}`}
               estimatedItemSize={40}
               renderItem={({ item, index }) => {
                 const isCursor = index === replayCursor;
