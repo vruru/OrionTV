@@ -1,0 +1,48 @@
+name: EAS Update (OTA)
+
+# 合并到 master 后自动向 production channel 发布 OTA 热更新。
+# 注意：JS 之外的变更（原生依赖、构建配置）OTA 覆盖不了，
+# 下列文件变更时跳过发布，需要重新构建客户端。
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - "package.json"
+      - "yarn.lock"
+      - "ios/**"
+      - "android/**"
+      - "app.json"
+      - "eas.json"
+      - "babel.config.js"
+      - "metro.config.js"
+      - ".github/**"
+      - "**/*.md"
+
+jobs:
+  update:
+    name: Publish OTA to production channel
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: yarn
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Setup Expo & EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      # COMMIT_MSG 走环境变量，避免提交信息里的特殊字符注入命令行
+      - name: Publish update
+        run: eas update --channel production --message "$COMMIT_MSG" --non-interactive
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
