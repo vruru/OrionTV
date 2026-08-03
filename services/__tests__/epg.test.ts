@@ -124,6 +124,20 @@ describe("epg", () => {
       expect([...asyncData.channelIdsByNormalizedName]).toEqual([...syncData.channelIdsByNormalizedName]);
       expect([...asyncData.programmesByChannel]).toEqual([...syncData.programmesByChannel]);
     });
+
+    it("异步解析应把 M3U 频道名换算为 XMLTV id 后过滤", async () => {
+      const data = await parseEpgXmlAsync(SAMPLE_XML, new Set(["湖南卫视"]), NOW);
+      expect(data.programmesByChannel.has("cctv1")).toBe(false);
+      expect(data.programmesByChannel.get("hunan")?.map((p) => p.title)).toEqual(["快乐大本营"]);
+    });
+
+    it("异步解析应响应页面失焦触发的中止信号", async () => {
+      const controller = new AbortController();
+      controller.abort();
+      await expect(parseEpgXmlAsync(SAMPLE_XML, undefined, NOW, controller.signal)).rejects.toMatchObject({
+        name: "AbortError",
+      });
+    });
   });
 
   describe("getCurrentProgramme", () => {
@@ -208,6 +222,25 @@ describe("epg", () => {
       const data = await fetchEpg("http://example.com/e.xml");
       expect(data).not.toBeNull();
       expect(data!.channelDisplayNames.get("hunan")).toBe("湖南卫视");
+    });
+
+    it("调用前已中止时不应再发起请求", async () => {
+      global.fetch = jest.fn();
+      const controller = new AbortController();
+      controller.abort();
+      expect(await fetchEpg("http://example.com/e.xml", undefined, controller.signal)).toBeNull();
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it("相同 EPG 地址和频道集合应复用解析索引", async () => {
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue({ ok: true, text: async () => SAMPLE_XML } as unknown as Response);
+      const wanted = new Set(["湖南卫视"]);
+      const first = await fetchEpg("http://example.com/cached-e.xml", wanted);
+      const second = await fetchEpg("http://example.com/cached-e.xml", wanted);
+      expect(first).toBe(second);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
     });
   });
 });

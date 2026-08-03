@@ -48,6 +48,8 @@ export const normalizeChannelName = (name: string): string =>
     .replace(/(高清|超清|hd|fhd|4k|8k|频道|卫视)+$/g, '');
 
 const MAX_EPG_BYTES = 40 * 1024 * 1024; // 超过 40MB 的 EPG 拒绝解析，避免卡死
+const EPG_CACHE_TTL = 10 * 60 * 1000;
+const epgCache = new Map<string, { data: EpgData; expiresAt: number }>();
 
 const CHANNEL_RE_SOURCE = '<channel\\s+id="([^"]+)"[^>]*>([\\s\\S]*?)<\\/channel>';
 const PROGRAMME_RE_SOURCE =
@@ -108,6 +110,18 @@ const finishEpgData = (target: EpgAccumulator, fetchedAt: number): EpgData => {
 /** 把执行权还给 RN 一帧，让播放器状态和遥控器事件可以继续被处理。 */
 const yieldToUi = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
+const throwIfAborted = (signal?: AbortSignal) => {
+  if (!signal?.aborted) return;
+  const error = new Error('EPG 解析已中止');
+  error.name = 'AbortError';
+  throw error;
+};
+
+const buildEpgCacheKey = (epgUrl: string, wantedChannelIds?: Set<string>): string => {
+  if (!wantedChannelIds || wantedChannelIds.size === 0) return epgUrl;
+  return `${epgUrl}\n${[...wantedChannelIds].sort().join('\u0000')}`;
+};
+
 export const parseEpgXml = (
   xmlText: string,
   wantedChannelIds?: Set<string>,
@@ -142,15 +156,33 @@ export const parseEpgXml = (
 export const parseEpgXmlAsync = async (
   xmlText: string,
   wantedChannelIds?: Set<string>,
-  now: number = Date.now()
+  now: number = Date.now(),
+  signal?: AbortSignal
 ): Promise<EpgData> => {
+  throwIfAborted(signal);
   const target = createAccumulator();
   const channelRe = new RegExp(CHANNEL_RE_SOURCE, 'g');
   let cm: RegExpExecArray | null;
   let scanned = 0;
   while ((cm = channelRe.exec(xmlText)) !== null) {
     addChannelMatch(target, cm);
-    if (++scanned % 100 === 0) await yieldToUi();
+    if (++scanned % 100 === 0) {
+      await yieldToUi();
+      throwIfAborted(signal);
+    }
+  }
+
+  // M3U 经常只有频道名而不是 XMLTV channel id。频道表已经解析完毕，先把
+  // 名称候选换算成真正的 id，再过滤节目，减少后续保留对象和排序开销。
+  let effectiveWantedIds = wantedChannelIds;
+  if (wantedChannelIds && wantedChannelIds.size > 0) {
+    // 原值本身可能就是 XMLTV id；同时补上按 display-name 命中的 id。
+    effectiveWantedIds = new Set<string>(wantedChannelIds);
+    for (const candidate of wantedChannelIds) {
+      if (target.channelDisplayNames.has(candidate)) effectiveWantedIds.add(candidate);
+      const matchedId = target.channelIdsByNormalizedName.get(normalizeChannelName(candidate));
+      if (matchedId) effectiveWantedIds.add(matchedId);
+    }
   }
 
   const windowStart = now - 54 * 60 * 60 * 1000;
@@ -159,16 +191,35 @@ export const parseEpgXmlAsync = async (
   let pm: RegExpExecArray | null;
   scanned = 0;
   while ((pm = progRe.exec(xmlText)) !== null) {
-    addProgrammeMatch(target, pm, windowStart, windowEnd, wantedChannelIds);
-    if (++scanned % 250 === 0) await yieldToUi();
+    addProgrammeMatch(target, pm, windowStart, windowEnd, effectiveWantedIds);
+    if (++scanned % 250 === 0) {
+      await yieldToUi();
+      throwIfAborted(signal);
+    }
   }
 
+  throwIfAborted(signal);
   return finishEpgData(target, now);
 };
 
-export const fetchEpg = async (epgUrl: string, wantedChannelIds?: Set<string>): Promise<EpgData | null> => {
+export const fetchEpg = async (
+  epgUrl: string,
+  wantedChannelIds?: Set<string>,
+  signal?: AbortSignal
+): Promise<EpgData | null> => {
+  if (signal?.aborted) return null;
+  const cacheKey = buildEpgCacheKey(epgUrl, wantedChannelIds);
+  const cached = epgCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    logger.info('复用内存中的 EPG 索引');
+    return cached.data;
+  }
+  if (cached) epgCache.delete(cacheKey);
+
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort();
+  signal?.addEventListener('abort', abortFromCaller, { once: true });
   try {
-    const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 20_000);
     try {
       const response = await fetch(epgUrl, { signal: controller.signal });
@@ -180,17 +231,26 @@ export const fetchEpg = async (epgUrl: string, wantedChannelIds?: Set<string>): 
         logger.info(`EPG 文件过大（${(text.length / 1024 / 1024).toFixed(1)}MB），放弃解析`);
         return null;
       }
-      const data = await parseEpgXmlAsync(text, wantedChannelIds);
+      const data = await parseEpgXmlAsync(text, wantedChannelIds, Date.now(), controller.signal);
       logger.info(
         `EPG 解析完成：${data.programmesByChannel.size} 个频道有节目单，共 ${data.channelDisplayNames.size} 个频道名`
       );
+      epgCache.set(cacheKey, { data, expiresAt: Date.now() + EPG_CACHE_TTL });
+      // 电视端只需要最近几套源，限制缓存规模，避免多次改地址后常驻过多节目单。
+      while (epgCache.size > 3) {
+        const oldestKey = epgCache.keys().next().value;
+        if (oldestKey === undefined) break;
+        epgCache.delete(oldestKey);
+      }
       return data;
     } finally {
       clearTimeout(timer);
     }
   } catch (error) {
-    logger.info('获取 EPG 失败:', error);
+    if (!controller.signal.aborted) logger.info('获取 EPG 失败:', error);
     return null;
+  } finally {
+    signal?.removeEventListener('abort', abortFromCaller);
   }
 };
 

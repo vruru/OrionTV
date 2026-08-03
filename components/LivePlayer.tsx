@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from "react";
+import React, { useRef, useState, useEffect, useLayoutEffect } from "react";
 import { View, StyleSheet, Text, ActivityIndicator } from "react-native";
 import { Video, AVPlaybackStatus } from "expo-av";
 import { useKeepAwake } from "expo-keep-awake";
@@ -27,6 +27,16 @@ export default function LivePlayer({ streamUrl, channelTitle, onPlaybackStatusUp
   // 全局画面比例设置（设置页 / TV 上键快捷切换即时生效）
   const videoResizeMode = useSettingsStore((s) => s.videoResizeMode);
   useKeepAwake();
+
+  // 部分 Android TV 固件在 React 视图卸载后不会立刻释放解码器；主动 unload，
+  // 避免退出直播页后后台视频仍占用硬解/网络并持续派发状态回调。
+  useLayoutEffect(
+    () => () => {
+      const mountedVideo = video.current;
+      if (mountedVideo) void mountedVideo.unloadAsync().catch(() => undefined);
+    },
+    []
+  );
 
   useEffect(() => {
     if (timeoutRef.current) {

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { View, FlatList, StyleSheet, ActivityIndicator, Modal, useTVEventHandler, HWEvent, Text, TextInput, Pressable, BackHandler } from "react-native";
+import { useIsFocused } from "@react-navigation/native";
 import { FlashList } from "@shopify/flash-list";
 import Toast from "react-native-toast-message";
 import { QrCode } from "lucide-react-native";
@@ -76,6 +77,7 @@ const replayDayLabel = (key: string): string => {
 };
 
 export default function LiveScreen() {
+  const isScreenFocused = useIsFocused();
   const { m3uUrl, apiBaseUrl, epgUrl, replayServerUrl, remoteInputEnabled } = useSettingsStore();
   const { favoriteIds, load: loadFavorites, toggle: toggleFavorite } = useLiveFavoritesStore();
   const { showModal: showRemoteModal, lastMessage, targetPage, clearMessage } = useRemoteControlStore();
@@ -145,7 +147,10 @@ export default function LiveScreen() {
   const selectedChannelUrl = channels.length > 0 ? getPlayableUrl(channels[currentChannelIndex]?.url ?? null) : null;
 
   // Keep refs in sync with the latest render.
-  const favoriteChannels = channels.filter((c) => favoriteIds.includes(c.id));
+  const favoriteChannels = useMemo(
+    () => channels.filter((c) => favoriteIds.includes(c.id)),
+    [channels, favoriteIds]
+  );
   const displayGroups = favoriteChannels.length > 0 ? [FAVORITES_GROUP, ...channelGroups] : channelGroups;
   const currentGroupList =
     selectedGroup === FAVORITES_GROUP ? favoriteChannels : groupedChannels[selectedGroup] || [];
@@ -180,19 +185,31 @@ export default function LiveScreen() {
       setEpgData(null);
       return;
     }
-    let cancelled = false;
-    (async () => {
-      const data = await fetchEpg(epgUrl);
-      if (!cancelled) {
-        setEpgData(data);
-        const supportCount = channels.filter((c) => !!c.catchupSource).length;
-        logger.info(`回看能力探测：${supportCount}/${channels.length} 个频道声明了 catchup-source`);
-      }
-    })();
+    if (!isScreenFocused) return;
+
+    const controller = new AbortController();
+    // 先让播放器建立连接并显示首帧，避免 EPG 下载/解析和首帧初始化同时争抢 JS 线程。
+    const timer = setTimeout(() => {
+      void (async () => {
+        const wantedChannels = new Set<string>();
+        for (const channel of channels) {
+          if (channel.tvgId) wantedChannels.add(channel.tvgId);
+          if (channel.tvgName) wantedChannels.add(channel.tvgName);
+          wantedChannels.add(channel.name);
+        }
+        const data = await fetchEpg(epgUrl, wantedChannels, controller.signal);
+        if (!controller.signal.aborted) {
+          setEpgData(data);
+          const supportCount = channels.filter((c) => !!c.catchupSource).length;
+          logger.info(`回看能力探测：${supportCount}/${channels.length} 个频道声明了 catchup-source`);
+        }
+      })();
+    }, 1500);
     return () => {
-      cancelled = true;
+      clearTimeout(timer);
+      controller.abort();
     };
-  }, [epgUrl, channels]);
+  }, [epgUrl, channels, isScreenFocused]);
 
   // 配置了回看服务地址才拉取 NAS 录制频道清单；留空即不启用回看（功能自动隐藏）
   useEffect(() => {
@@ -200,6 +217,7 @@ export default function LiveScreen() {
       setRecordedChannels(new Set());
       return;
     }
+    if (!isScreenFocused) return;
     let cancelled = false;
     (async () => {
       const list = await fetchRecordedChannels(replayServerUrl);
@@ -208,7 +226,7 @@ export default function LiveScreen() {
     return () => {
       cancelled = true;
     };
-  }, [replayServerUrl]);
+  }, [replayServerUrl, isScreenFocused]);
 
   // 有 EPG 节目单的频道名集合：频道行右侧「节目单」标的数据源
   const epgChannelNames = useMemo(() => {
@@ -241,14 +259,14 @@ export default function LiveScreen() {
 
   // 远程输入（手机扫码打字）直投频道搜索
   useEffect(() => {
-    if (lastMessage && targetPage === "live") {
+    if (isScreenFocused && lastMessage && targetPage === "live") {
       setSearchKeyword(lastMessage.text);
       setIsChannelListVisible(true);
       cursorRef.current = 0;
       setListSelectedIndex(0);
       clearMessage();
     }
-  }, [lastMessage, targetPage, clearMessage]);
+  }, [isScreenFocused, lastMessage, targetPage, clearMessage]);
 
   useEffect(() => {
     const loadChannels = async () => {
@@ -571,13 +589,13 @@ export default function LiveScreen() {
 
   // 播放回看中按返回键：退出回看回到直播（拦截系统返回，不退出 App）
   useEffect(() => {
-    if (!replaySession) return;
+    if (!isScreenFocused || !replaySession) return;
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
       setReplaySession(null);
       return true;
     });
     return () => sub.remove();
-  }, [replaySession]);
+  }, [isScreenFocused, replaySession]);
 
   // 回看节目单打开时滚动到光标位置（当前节目）
   useEffect(() => {
@@ -606,7 +624,23 @@ export default function LiveScreen() {
       setSearchKeyword("");
     }
   }, [isChannelListVisible]);
-  useEffect(() => () => stopFast(), []);
+  useEffect(() => {
+    if (isScreenFocused) return;
+    stopFast();
+    searchInputRef.current?.blur();
+    setIsSearchFocused(false);
+    setIsChannelListVisible(false);
+    setReplayChannel(null);
+    setReplayBlocks(null);
+    setReplaySession(null);
+  }, [isScreenFocused]);
+  useEffect(
+    () => () => {
+      stopFast();
+      if (titleTimer.current) clearTimeout(titleTimer.current);
+    },
+    []
+  );
 
   const handleSelectChannel = (channel: Channel) => {
     const globalIndex = channels.findIndex((c) => c.id === channel.id);
@@ -684,7 +718,7 @@ export default function LiveScreen() {
 
   const handleTVEvent = useCallback(
     (event: HWEvent) => {
-      if (deviceType !== "tv") return;
+      if (!isScreenFocused || deviceType !== "tv") return;
       // 搜索框聚焦时按键交给系统键盘/输入框，不做列表导航
       if (isSearchFocused) return;
       const type = event?.eventType;
@@ -810,25 +844,29 @@ export default function LiveScreen() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [deviceType, isChannelListVisible, isSearchFocused, changeChannel]
+    [isScreenFocused, deviceType, isChannelListVisible, isSearchFocused, changeChannel]
   );
 
-  useTVEventHandler(deviceType === "tv" ? handleTVEvent : () => {});
+  useTVEventHandler(handleTVEvent);
 
   // 动态样式
   const dynamicStyles = createResponsiveStyles(deviceType, spacing);
 
   const renderLiveContent = () => (
     <>
-      <LivePlayer
-        streamUrl={replaySession ? replaySession.url : selectedChannelUrl}
-        channelTitle={
-          replaySession ? `回看 · ${replaySession.channelName} · ${replaySession.title}` : channelTitle
-        }
-        onPlaybackStatusUpdate={() => {}}
-        retryKey={retryKey}
-        onPlaybackError={setPlaybackFailed}
-      />
+      {isScreenFocused ? (
+        <LivePlayer
+          streamUrl={replaySession ? replaySession.url : selectedChannelUrl}
+          channelTitle={
+            replaySession ? `回看 · ${replaySession.channelName} · ${replaySession.title}` : channelTitle
+          }
+          onPlaybackStatusUpdate={() => {}}
+          retryKey={retryKey}
+          onPlaybackError={setPlaybackFailed}
+        />
+      ) : (
+        <View style={styles.inactivePlayer} />
+      )}
       {/* 全屏播放器本身没有可聚焦控件；保留一个透明 TV 焦点锚点，确保进入页面后
           遥控器事件稳定落在直播页面。方向键仍统一由 handleTVEvent 处理。 */}
       {deviceType === "tv" && !isChannelListVisible && !replayChannel && (
@@ -1094,8 +1132,16 @@ const styles = StyleSheet.create({
     opacity: 0,
   },
   playerFocusAnchor: {
-    ...StyleSheet.absoluteFillObject,
+    position: "absolute",
+    top: 0,
+    left: 0,
+    width: 1,
+    height: 1,
     opacity: 0,
+  },
+  inactivePlayer: {
+    flex: 1,
+    backgroundColor: "#000",
   },
   retryTouchOverlay: {
     ...StyleSheet.absoluteFillObject,
