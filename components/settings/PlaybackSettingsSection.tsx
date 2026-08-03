@@ -4,6 +4,7 @@ import { useTVEventHandler } from "react-native";
 import { ThemedText } from "@/components/ThemedText";
 import { SettingsSection } from "./SettingsSection";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { nextResizeMode, RESIZE_MODE_DESCRIPTIONS, RESIZE_MODE_LABELS } from "@/utils/resizeMode";
 import { useButtonAnimation } from "@/hooks/useAnimation";
 import { Colors } from "@/constants/Colors";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
@@ -20,6 +21,48 @@ interface ToggleRowProps {
   value: boolean;
   onToggle: (next: boolean) => void;
 }
+
+interface CycleRowProps {
+  name: string;
+  description?: string;
+  valueLabel: string;
+  onCycle: () => void;
+}
+
+// A single focusable cycle row: each "select" switches to the next option and
+// the current value is shown as text on the right (like TV OSD settings).
+const CycleRow: React.FC<CycleRowProps> = ({ name, description, valueLabel, onCycle }) => {
+  const [isFocused, setIsFocused] = React.useState(false);
+  const animationStyle = useButtonAnimation(isFocused, 1.05);
+  const deviceType = useResponsiveLayout().deviceType;
+
+  const handleTVEvent = React.useCallback(
+    (event: any) => {
+      if (isFocused && event.eventType === "select") {
+        onCycle();
+      }
+    },
+    [isFocused, onCycle]
+  );
+  useTVEventHandler(handleTVEvent);
+
+  return (
+    <Pressable
+      style={styles.settingItem}
+      onFocus={() => setIsFocused(true)}
+      onBlur={() => setIsFocused(false)}
+      {...(Platform.isTV || deviceType !== "tv" ? undefined : { onPress: onCycle })}
+    >
+      <View style={styles.settingInfo}>
+        <ThemedText style={styles.settingName}>{name}</ThemedText>
+        {description ? <ThemedText style={styles.settingDescription}>{description}</ThemedText> : null}
+      </View>
+      <Animated.View style={animationStyle}>
+        <ThemedText style={styles.cycleValue}>{valueLabel} ›</ThemedText>
+      </Animated.View>
+    </Pressable>
+  );
+};
 
 // A single focusable toggle row. On TV the row itself is focusable and "select"
 // flips the value; the Switch is display-only.
@@ -69,7 +112,7 @@ const ToggleRow: React.FC<ToggleRowProps> = ({ name, description, value, onToggl
 };
 
 export const PlaybackSettingsSection: React.FC<PlaybackSettingsSectionProps> = ({ onChanged, onFocus, onBlur }) => {
-  const { autoSkipIntroOutro, setAutoSkipIntroOutro, hdSourcesOnly, setHdSourcesOnly } = useSettingsStore();
+  const { autoSkipIntroOutro, setAutoSkipIntroOutro, hdSourcesOnly, setHdSourcesOnly, videoResizeMode, setVideoResizeMode } = useSettingsStore();
 
   const handleAutoSkip = useCallback(
     (next: boolean) => {
@@ -87,6 +130,11 @@ export const PlaybackSettingsSection: React.FC<PlaybackSettingsSectionProps> = (
     [setHdSourcesOnly, onChanged]
   );
 
+  const handleCycleResizeMode = useCallback(() => {
+    setVideoResizeMode(nextResizeMode(videoResizeMode));
+    onChanged();
+  }, [setVideoResizeMode, videoResizeMode, onChanged]);
+
   return (
     <SettingsSection focusable onFocus={onFocus} onBlur={onBlur}>
       <ThemedText style={styles.sectionTitle}>播放设置</ThemedText>
@@ -101,6 +149,12 @@ export const PlaybackSettingsSection: React.FC<PlaybackSettingsSectionProps> = (
         description="在选源列表中隐藏低于1080P的播放源（分辨率未知的仍会保留）"
         value={hdSourcesOnly}
         onToggle={handleHdOnly}
+      />
+      <CycleRow
+        name="画面比例"
+        description={`${RESIZE_MODE_DESCRIPTIONS[videoResizeMode]}（直播时 TV 遥控器上键可快捷切换）`}
+        valueLabel={RESIZE_MODE_LABELS[videoResizeMode]}
+        onCycle={handleCycleResizeMode}
       />
     </SettingsSection>
   );
@@ -137,5 +191,10 @@ const styles = StyleSheet.create({
   },
   iosToggleText: {
     fontSize: 14,
+  },
+  cycleValue: {
+    fontSize: 14,
+    color: Colors.dark.primary,
+    fontWeight: "bold",
   },
 });

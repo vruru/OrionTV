@@ -1,8 +1,9 @@
 import { useCallback, RefObject, useMemo } from 'react';
-import { Video, ResizeMode } from 'expo-av';
+import { Video } from 'expo-av';
 import Toast from 'react-native-toast-message';
 import usePlayerStore from '@/stores/playerStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { toAvResizeMode } from '@/utils/resizeMode';
 import Logger from '@/utils/Logger';
 
 const logger = Logger.withTag('VideoHandlers');
@@ -122,11 +123,14 @@ export const useVideoHandlers = ({
     }
   }, [currentEpisode?.url]);
 
+  // 全局画面比例设置（设置页 / 直播快捷键共用同一状态）
+  const videoResizeMode = useSettingsStore((s) => s.videoResizeMode);
+
   // 优化的Video组件props
   const videoProps = useMemo(() => ({
     source: { uri: currentEpisode?.url || '' },
     posterSource: { uri: detail?.poster ?? "" },
-    resizeMode: ResizeMode.CONTAIN,
+    resizeMode: toAvResizeMode(videoResizeMode),
     // NOTE: `rate` is deliberately NOT passed as a prop. The declarative prop
     // fights the imperative setStatusAsync call (each render re-applies it and
     // reconfigures the decoder), which caused stuttering at non-1x rates.
@@ -141,6 +145,7 @@ export const useVideoHandlers = ({
   }), [
     currentEpisode?.url,
     detail?.poster,
+    videoResizeMode,
     handlePlaybackStatusUpdate,
     onLoad,
     onLoadStart,

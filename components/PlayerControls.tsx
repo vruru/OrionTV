@@ -1,12 +1,14 @@
 import React from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
-import { Pause, Play, SkipForward, List, Tv, ArrowDownToDot, ArrowUpFromDot, Gauge } from "lucide-react-native";
+import { Pause, Play, SkipForward, List, Tv, ArrowDownToDot, ArrowUpFromDot, Gauge, Expand } from "lucide-react-native";
 import { ThemedText } from "@/components/ThemedText";
 import { MediaButton } from "@/components/MediaButton";
 
 import usePlayerStore from "@/stores/playerStore";
 import useDetailStore from "@/stores/detailStore";
 import { useSources } from "@/stores/sourceStore";
+import { useSettingsStore } from "@/stores/settingsStore";
+import { nextResizeMode, RESIZE_MODE_LABELS } from "@/utils/resizeMode";
 
 interface PlayerControlsProps {
   showControls: boolean;
@@ -35,6 +37,8 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({ showControls, se
 
   const { detail } = useDetailStore();
   const resources = useSources();
+  const videoResizeMode = useSettingsStore((s) => s.videoResizeMode);
+  const setVideoResizeMode = useSettingsStore((s) => s.setVideoResizeMode);
 
   const videoTitle = detail?.title || "";
   const currentEpisode = episodes[currentEpisodeIndex];
@@ -113,6 +117,13 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({ showControls, se
 
           <MediaButton onPress={() => setShowSpeedModal(true)} timeLabel={playbackRate !== 1.0 ? `${playbackRate}x` : undefined}>
             <Gauge color="white" size={24} />
+          </MediaButton>
+
+          <MediaButton
+            onPress={() => setVideoResizeMode(nextResizeMode(videoResizeMode))}
+            timeLabel={videoResizeMode !== "contain" ? RESIZE_MODE_LABELS[videoResizeMode] : undefined}
+          >
+            <Expand color="white" size={24} />
           </MediaButton>
 
           <MediaButton onPress={() => setShowSourceModal(true)}>

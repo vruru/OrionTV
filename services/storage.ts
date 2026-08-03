@@ -45,6 +45,8 @@ export interface AppSettings {
   autoSkipIntroOutro: boolean;
   // 仅显示 1080P 及以上分辨率的播放源
   hdSourcesOnly: boolean;
+  // 全局画面比例：contain 原始比例 / cover 裁剪填充 / stretch 拉伸满屏
+  videoResizeMode: "contain" | "cover" | "stretch";
 }
 
 export interface LoginCredentials {
@@ -355,6 +357,7 @@ export class SettingsManager {
       epgUrl: "",
       autoSkipIntroOutro: true,
       hdSourcesOnly: true,
+      videoResizeMode: "contain",
     };
     try {
       const data = await AsyncStorage.getItem(STORAGE_KEYS.SETTINGS);
