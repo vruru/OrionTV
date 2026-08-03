@@ -44,7 +44,7 @@
     },
     "name": "OrionTV",
     "slug": "oriontv",
-    "version": "1.3.37",
+    "version": "1.3.38",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "userInterfaceStyle": "dark",
