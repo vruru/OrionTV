@@ -87,7 +87,11 @@ class UpdateService {
   private async verifyUrlAvailable(url: string): Promise<boolean> {
     try {
       const res = await this.fetchWithTimeout(url, { method: 'HEAD' }, 8_000);
-      return res.ok;
+      if (res.ok) return true;
+      // 部分服务器/加速代理不支持或拦截 HEAD（返回 405 等），
+      // 降级为 1 字节 Range GET 再判断，避免误伤真实可用的下载地址。
+      const rangeRes = await this.fetchWithTimeout(url, { headers: { Range: 'bytes=0-0' } }, 8_000);
+      return rangeRes.ok || rangeRes.status === 206;
     } catch {
       return false;
     }

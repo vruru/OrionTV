@@ -24,7 +24,7 @@ const formatTime = (milliseconds: number) => {
   return `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
 };
 
-// Shows a strip of preview thumbnails (5s apart, starting at the cursor) while
+// Shows a strip of preview thumbnails (10s apart, starting at the cursor) while
 // the user scrubs. Playback continues in the background; the strip only reflects
 // where a jump WOULD land if confirmed.
 export const SeekingBar = () => {
