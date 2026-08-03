@@ -158,7 +158,7 @@ const useHomeStore = create<HomeState>((set, get) => ({
               ...record,
               id,
               source,
-              progress: record.play_time / record.total_time,
+              progress: record.total_time > 0 ? record.play_time / record.total_time : 0,
               poster: record.cover,
               sourceName: record.source_name,
               episodeIndex: record.index,
@@ -318,8 +318,8 @@ const useHomeStore = create<HomeState>((set, get) => ({
         const recordCategoryExists = state.categories.some((c) => c.type === "record");
         if (recordCategoryExists) {
           const newCategories = state.categories.filter((c) => c.type !== "record");
-          if (state.selectedCategory.type === "record") {
-            get().selectCategory(newCategories[0] || null);
+          if (state.selectedCategory.type === "record" && newCategories[0]) {
+            get().selectCategory(newCategories[0]);
           }
           return { categories: newCategories };
         }
@@ -336,8 +336,8 @@ const useHomeStore = create<HomeState>((set, get) => ({
       }
       if (!hasRecords && recordCategoryExists) {
         const newCategories = state.categories.filter((c) => c.type !== "record");
-        if (state.selectedCategory.type === "record") {
-          get().selectCategory(newCategories[0] || null);
+        if (state.selectedCategory.type === "record" && newCategories[0]) {
+          get().selectCategory(newCategories[0]);
         }
         return { categories: newCategories };
       }
