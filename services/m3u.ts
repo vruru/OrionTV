@@ -8,12 +8,24 @@ export interface Channel {
   url: string;
   logo: string;
   group: string;
+  /** EPG 匹配用：m3u 里的 tvg-id / tvg-name */
+  tvgId?: string;
+  tvgName?: string;
+  /** 时移回看能力（来自 m3u 的 catchup 系列属性，仅部分源提供） */
+  catchup?: string;
+  catchupSource?: string;
+  catchupDays?: string;
 }
 
 export const parseM3U = (m3uText: string): Channel[] => {
   const parsedChannels: Channel[] = [];
   const lines = m3uText.split('\n');
   let currentChannelInfo: Partial<Channel> | null = null;
+
+  const matchAttr = (attrs: string, name: string): string | undefined => {
+    const m = attrs.match(new RegExp(`${name}="([^"]*)"`, 'i'));
+    return m && m[1] ? m[1] : undefined;
+  };
 
   for (const line of lines) {
     const trimmedLine = line.trim();
@@ -23,14 +35,19 @@ export const parseM3U = (m3uText: string): Channel[] => {
       if (commaIndex !== -1) {
         currentChannelInfo.name = trimmedLine.substring(commaIndex + 1).trim();
         const attributesPart = trimmedLine.substring(8, commaIndex);
-        const logoMatch = attributesPart.match(/tvg-logo="([^"]*)"/i);
-        if (logoMatch && logoMatch[1]) {
-          currentChannelInfo.logo = logoMatch[1];
+        const logo = matchAttr(attributesPart, 'tvg-logo');
+        if (logo) {
+          currentChannelInfo.logo = logo;
         }
-        const groupMatch = attributesPart.match(/group-title="([^"]*)"/i);
-        if (groupMatch && groupMatch[1]) {
-          currentChannelInfo.group = groupMatch[1];
+        const group = matchAttr(attributesPart, 'group-title');
+        if (group) {
+          currentChannelInfo.group = group;
         }
+        currentChannelInfo.tvgId = matchAttr(attributesPart, 'tvg-id');
+        currentChannelInfo.tvgName = matchAttr(attributesPart, 'tvg-name');
+        currentChannelInfo.catchup = matchAttr(attributesPart, 'catchup');
+        currentChannelInfo.catchupSource = matchAttr(attributesPart, 'catchup-source');
+        currentChannelInfo.catchupDays = matchAttr(attributesPart, 'catchup-days');
       } else {
         currentChannelInfo.name = trimmedLine.substring(8).trim();
       }
@@ -45,6 +62,11 @@ export const parseM3U = (m3uText: string): Channel[] => {
         name: currentChannelInfo.name || 'Unknown',
         logo: currentChannelInfo.logo || '',
         group: currentChannelInfo.group || 'Default',
+        tvgId: currentChannelInfo.tvgId,
+        tvgName: currentChannelInfo.tvgName,
+        catchup: currentChannelInfo.catchup,
+        catchupSource: currentChannelInfo.catchupSource,
+        catchupDays: currentChannelInfo.catchupDays,
       };
       
       parsedChannels.push(finalChannel);
