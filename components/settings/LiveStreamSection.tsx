@@ -1,5 +1,5 @@
 import React, { useState, useRef, useImperativeHandle, forwardRef } from "react";
-import { View, TextInput, StyleSheet, Animated, Platform } from "react-native";
+import { View, TextInput, StyleSheet, Animated } from "react-native";
 import { useTVEventHandler } from "react-native";
 import { ThemedText } from "@/components/ThemedText";
 import { SettingsSection } from "./SettingsSection";
@@ -7,7 +7,6 @@ import { useSettingsStore } from "@/stores/settingsStore";
 import { useRemoteControlStore } from "@/stores/remoteControlStore";
 import { useButtonAnimation } from "@/hooks/useAnimation";
 import { Colors } from "@/constants/Colors";
-import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 
 interface LiveStreamSectionProps {
   onChanged: () => void;
@@ -29,9 +28,11 @@ export const LiveStreamSection = forwardRef<LiveStreamSectionRef, LiveStreamSect
     const [isInputFocused, setIsInputFocused] = useState(false);
     const [isEpgInputFocused, setIsEpgInputFocused] = useState(false);
     const [isSectionFocused, setIsSectionFocused] = useState(false);
+    // TV 遥控器上下键切换的目标输入框
+    const [activeField, setActiveField] = useState<"m3u" | "epg">("m3u");
     const inputRef = useRef<TextInput>(null);
+    const epgInputRef = useRef<TextInput>(null);
     const inputAnimationStyle = useButtonAnimation(isSectionFocused, 1.01);
-    const deviceType = useResponsiveLayout().deviceType;
 
     const handleUrlChange = (url: string) => {
       setM3uUrl(url);
@@ -55,18 +56,27 @@ export const LiveStreamSection = forwardRef<LiveStreamSectionRef, LiveStreamSect
       onBlur?.();
     };
 
+    // TV 上按确认键：聚焦当前目标输入框（M3U 或 EPG）
     const handlePress = () => {
-      inputRef.current?.focus();
+      if (activeField === "epg") {
+        epgInputRef.current?.focus();
+      } else {
+        inputRef.current?.focus();
+      }
       onPress?.();
-    }
+    };
 
+    // TV 遥控器上下键切换目标输入框；确认键交给 onPress，避免双触发
     const handleTVEvent = React.useCallback(
       (event: any) => {
-        if (isSectionFocused && event.eventType === "select") {
-          inputRef.current?.focus();
+        if (!isSectionFocused || isInputFocused || isEpgInputFocused) return;
+        if (event.eventType === "down") {
+          setActiveField("epg");
+        } else if (event.eventType === "up") {
+          setActiveField("m3u");
         }
       },
-      [isSectionFocused]
+      [isSectionFocused, isInputFocused, isEpgInputFocused]
     );
 
     useTVEventHandler(handleTVEvent);
@@ -85,7 +95,7 @@ export const LiveStreamSection = forwardRef<LiveStreamSectionRef, LiveStreamSect
 
     return (
       <SettingsSection focusable onFocus={handleSectionFocus} onBlur={handleSectionBlur}
-        onPress={Platform.isTV || deviceType !== 'tv' ? undefined : handlePress}
+        onPress={handlePress}
       >
         <View style={styles.inputContainer}>
           <View style={styles.titleContainer}>
@@ -97,7 +107,7 @@ export const LiveStreamSection = forwardRef<LiveStreamSectionRef, LiveStreamSect
           <Animated.View style={inputAnimationStyle}>
             <TextInput
               ref={inputRef}
-              style={[styles.input, isInputFocused && styles.inputFocused]}
+              style={[styles.input, isInputFocused && styles.inputFocused, isSectionFocused && activeField === "m3u" && !isInputFocused && styles.inputTarget]}
               value={m3uUrl}
               onChangeText={handleUrlChange}
               placeholder="输入 M3U 直播源地址"
@@ -135,7 +145,8 @@ export const LiveStreamSection = forwardRef<LiveStreamSectionRef, LiveStreamSect
           </View>
           <Animated.View style={inputAnimationStyle}>
             <TextInput
-              style={[styles.input, isEpgInputFocused && styles.inputFocused]}
+              ref={epgInputRef}
+              style={[styles.input, isEpgInputFocused && styles.inputFocused, isSectionFocused && activeField === "epg" && !isEpgInputFocused && styles.inputTarget]}
               value={epgUrl}
               onChangeText={(url) => {
                 setEpgUrl(url);
@@ -199,5 +210,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.8,
     shadowRadius: 10,
     elevation: 5,
+  },
+  // TV 上下键切换时的目标输入框提示边框
+  inputTarget: {
+    borderColor: "rgba(255, 255, 255, 0.4)",
   },
 });
