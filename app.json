@@ -44,7 +44,7 @@
     },
     "name": "OrionTV",
     "slug": "oriontv",
-    "version": "1.3.36",
+    "version": "1.3.37",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "userInterfaceStyle": "dark",
@@ -101,7 +101,10 @@
       "enabled": true,
       "url": "https://u.expo.dev/37bfa1a9-1278-40ea-877f-c4d2fccd1dd6",
       "checkAutomatically": "ON_LOAD",
-      "fallbackToCacheTimeout": 0
+      "fallbackToCacheTimeout": 0,
+      "requestHeaders": {
+        "expo-channel-name": "production"
+      }
     },
     "extra": {
       "router": {
