@@ -1,10 +1,10 @@
 import React from "react";
-import { View, StyleSheet, Pressable, Animated, Platform, Modal, ActivityIndicator } from "react-native";
-import { useTVEventHandler } from "react-native";
+import { View, StyleSheet, Pressable, Animated, Modal, ActivityIndicator } from "react-native";
 import { ThemedText } from "@/components/ThemedText";
 import { SettingsSection } from "./SettingsSection";
 import { useSpeedTestStore } from "@/stores/speedTestStore";
 import { useButtonAnimation } from "@/hooks/useAnimation";
+import { useSectionEditMode } from "@/hooks/useSectionEditMode";
 import { Colors } from "@/constants/Colors";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { formatSpeed, speedColor } from "@/utils/sourceFilter";
@@ -12,14 +12,16 @@ import { formatSpeed, speedColor } from "@/utils/sourceFilter";
 interface SpeedTestSectionProps {
   onFocus?: () => void;
   onBlur?: () => void;
+  onEditModeChange?: (editing: boolean) => void;
 }
 
-export const SpeedTestSection: React.FC<SpeedTestSectionProps> = ({ onFocus, onBlur }) => {
+export const SpeedTestSection: React.FC<SpeedTestSectionProps> = ({ onFocus, onBlur, onEditModeChange }) => {
   const { results, isTesting, done, currentName, currentMbps, progressDone, progressTotal, runTest, cancelTest } =
     useSpeedTestStore();
-  const [isFocused, setIsFocused] = React.useState(false);
-  const animationStyle = useButtonAnimation(isFocused, 1.05);
+  const [isSectionFocused, setIsSectionFocused] = React.useState(false);
   const deviceType = useResponsiveLayout().deviceType;
+  const isTV = deviceType === "tv";
+  const animationStyle = useButtonAnimation(isSectionFocused, 1.05);
 
   const testedCount = Object.keys(results).length;
   const lastTestedAt = Object.values(results).reduce((max, r) => Math.max(max, r.testedAt), 0);
@@ -28,26 +30,22 @@ export const SpeedTestSection: React.FC<SpeedTestSectionProps> = ({ onFocus, onB
     if (!isTesting) runTest();
   };
 
-  // Focus can land on either the SettingsSection wrapper or the inner Pressable
-  // on TV, so both must set the same flag (mirrors RemoteInputSection). This is
-  // what makes the confirm key actually trigger the test.
   const handleSectionFocus = () => {
-    setIsFocused(true);
+    setIsSectionFocused(true);
     onFocus?.();
   };
   const handleSectionBlur = () => {
-    setIsFocused(false);
+    setIsSectionFocused(false);
     onBlur?.();
   };
 
-  const handleTVEvent = React.useCallback(
-    (event: any) => {
-      if (isFocused && event.eventType === "select") start();
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [isFocused, isTesting]
-  );
-  useTVEventHandler(handleTVEvent);
+  const { editMode, enterEditMode } = useSectionEditMode({
+    deviceType,
+    itemCount: 1,
+    isSectionFocused,
+    onActivate: start,
+    onEditModeChange,
+  });
 
   const lastLabel = testedCount > 0
     ? `上次测试：${new Date(lastTestedAt).toLocaleString()}（${testedCount} 个源）`
@@ -58,18 +56,17 @@ export const SpeedTestSection: React.FC<SpeedTestSectionProps> = ({ onFocus, onB
       focusable
       onFocus={handleSectionFocus}
       onBlur={handleSectionBlur}
-      {...(Platform.isTV || deviceType !== "tv" ? undefined : { onPress: start })}
+      onPress={isTV ? enterEditMode : start}
     >
-      <Pressable
-        style={styles.settingItem}
-        onFocus={handleSectionFocus}
-        onBlur={handleSectionBlur}
-      >
+      <Pressable focusable={!isTV} style={styles.settingItem} onPress={start}>
         <View style={styles.settingInfo}>
           <ThemedText style={styles.settingName}>源速度测试</ThemedText>
-          <ThemedText style={styles.settingDescription}>{lastLabel}</ThemedText>
+          <ThemedText style={styles.settingDescription}>
+            {lastLabel}
+            {isTV ? (editMode ? " · 确认键开始 · 返回键退出" : " · 按确认键进入") : ""}
+          </ThemedText>
         </View>
-        <Animated.View style={[styles.button, animationStyle, isFocused && styles.buttonFocused]}>
+        <Animated.View style={[styles.button, animationStyle, (isSectionFocused || editMode) && styles.buttonFocused]}>
           <ThemedText style={styles.buttonText}>{isTesting ? "测试中..." : "开始测速"}</ThemedText>
         </Animated.View>
       </Pressable>

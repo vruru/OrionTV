@@ -55,6 +55,9 @@ export default function SettingsScreen() {
   // While editing we must not let the screen-level TV key handler move focus,
   // otherwise pressing the D-pad closes the keyboard immediately.
   const [isEditingInput, setIsEditingInput] = useState(false);
+  // True while a section is in TV edit mode (用户在模块内部上下选择/修改)，
+  // 此期间挂起屏幕级的上下导航，按键全部交给该模块
+  const [editingSection, setEditingSection] = useState(false);
 
   const saveButtonRef = useRef<any>(null);
   const apiSectionRef = useRef<any>(null);
@@ -114,6 +117,7 @@ export default function SettingsScreen() {
             setCurrentFocusIndex(0);
             setCurrentSection("remote");
           }}
+          onEditModeChange={setEditingSection}
         />
       ),
       key: "remote",
@@ -130,6 +134,7 @@ export default function SettingsScreen() {
           }}
           onInputFocus={() => setIsEditingInput(true)}
           onInputBlur={() => setIsEditingInput(false)}
+          onEditModeChange={setEditingSection}
         />
       ),
       key: "api",
@@ -145,6 +150,7 @@ export default function SettingsScreen() {
           }}
           onInputFocus={() => setIsEditingInput(true)}
           onInputBlur={() => setIsEditingInput(false)}
+          onEditModeChange={setEditingSection}
         />
       ),
       key: "livestream",
@@ -157,6 +163,7 @@ export default function SettingsScreen() {
             setCurrentFocusIndex(3);
             setCurrentSection("playback");
           }}
+          onEditModeChange={setEditingSection}
         />
       ),
       key: "playback",
@@ -168,6 +175,7 @@ export default function SettingsScreen() {
             setCurrentFocusIndex(4);
             setCurrentSection("speedtest");
           }}
+          onEditModeChange={setEditingSection}
         />
       ),
       key: "speedtest",
@@ -189,7 +197,7 @@ export default function SettingsScreen() {
       // focus here (e.g. to the save button) would dismiss the keyboard before
       // the user can finish typing. This is what caused the live-source input
       // to "close immediately" when it was the last focusable section.
-      if (isEditingInput) return;
+      if (isEditingInput || editingSection) return;
 
       if (event.eventType === "down") {
         const nextIndex = Math.min(currentFocusIndex + 1, sections.length);
@@ -202,7 +210,7 @@ export default function SettingsScreen() {
         setCurrentFocusIndex(prevIndex);
       }
     },
-    [currentFocusIndex, sections.length, deviceType, isEditingInput]
+    [currentFocusIndex, sections.length, deviceType, isEditingInput, editingSection]
   );
 
   useTVEventHandler(deviceType === "tv" ? handleTVEvent : () => { });
