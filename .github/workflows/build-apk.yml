@@ -36,11 +36,29 @@ jobs:
       - name: Prebuild TV App
         run: yarn prebuild
 
+      # 兜底修复：CI 上 prebuild 可能丢失 expo-updates 的 URL/runtime/channel 元数据
+      #（本地无法复现的环境差异），该脚本幂等注入，保证 OTA 在裸 Gradle 包中可用
+      - name: Ensure expo-updates manifest entries
+        run: node scripts/ensure-updates-manifest.js
+
+      # 直接跑 gradle：不再二次 prebuild（既省时，也避免覆盖上一步注入的清单）
       - name: Build TV APK
-        run: yarn build
+        run: cd android && ./gradlew assembleRelease
         env:
           # 兜底：未配置 Sentry 组织时禁用构建期 sourcemap 自动上传
           SENTRY_DISABLE_AUTO_UPLOAD: "true"
+
+      # 发布前用 aapt 验证 APK 清单确实带 updates 配置，缺失则直接失败不出包
+      - name: Verify updates config in APK
+        run: |
+          AAPT=$(ls "$ANDROID_HOME"/build-tools/*/aapt 2>/dev/null | sort -V | tail -1)
+          echo "aapt: $AAPT"
+          DUMP=$("$AAPT" dump xmltree android/app/build/outputs/apk/release/app-release.apk AndroidManifest.xml)
+          echo "$DUMP" | grep -E "expo.modules.updates" || true
+          echo "$DUMP" | grep -q "EXPO_UPDATE_URL" || { echo "::error::APK 缺少 EXPO_UPDATE_URL，OTA 将不可用"; exit 1; }
+          echo "$DUMP" | grep -q "EXPO_RUNTIME_VERSION" || { echo "::error::APK 缺少 EXPO_RUNTIME_VERSION"; exit 1; }
+          echo "$DUMP" | grep -q "REQUEST_HEADERS_KEY" || { echo "::error::APK 缺少 updates requestHeaders（channel）"; exit 1; }
+          echo "APK updates 配置校验通过"
 
       - name: Rename APK file
         run: |
