@@ -3,6 +3,7 @@ import { SettingsManager } from "@/services/storage";
 import { api, ServerConfig } from "@/services/api";
 import { storageConfig } from "@/services/storageConfig";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { normalizeResizeMode, VideoResizeMode } from "@/utils/resizeMode";
 import Logger from "@/utils/Logger";
 
 const logger = Logger.withTag('SettingsStore');
@@ -14,6 +15,7 @@ interface SettingsState {
   remoteInputEnabled: boolean;
   autoSkipIntroOutro: boolean;
   hdSourcesOnly: boolean;
+  videoResizeMode: VideoResizeMode;
   videoSource: {
     enabledAll: boolean;
     sources: {
@@ -31,6 +33,7 @@ interface SettingsState {
   setRemoteInputEnabled: (enabled: boolean) => void;
   setAutoSkipIntroOutro: (enabled: boolean) => void;
   setHdSourcesOnly: (enabled: boolean) => void;
+  setVideoResizeMode: (mode: VideoResizeMode) => void;
   saveSettings: () => Promise<void>;
   setVideoSource: (config: { enabledAll: boolean; sources: { [key: string]: boolean } }) => void;
   showModal: () => void;
@@ -45,6 +48,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   remoteInputEnabled: false,
   autoSkipIntroOutro: true,
   hdSourcesOnly: true,
+  videoResizeMode: "contain",
   isModalVisible: false,
   serverConfig: null,
   isLoadingServerConfig: false,
@@ -61,6 +65,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       remoteInputEnabled: settings.remoteInputEnabled || false,
       autoSkipIntroOutro: settings.autoSkipIntroOutro ?? true,
       hdSourcesOnly: settings.hdSourcesOnly ?? true,
+      videoResizeMode: normalizeResizeMode(settings.videoResizeMode),
       videoSource: settings.videoSource || {
         enabledAll: true,
         sources: {},
@@ -110,6 +115,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setRemoteInputEnabled: (enabled) => set({ remoteInputEnabled: enabled }),
   setAutoSkipIntroOutro: (enabled) => set({ autoSkipIntroOutro: enabled }),
   setHdSourcesOnly: (enabled) => set({ hdSourcesOnly: enabled }),
+  // 画面比例即时生效并轻量持久化（不走 saveSettings 的服务器配置重拉流程）
+  setVideoResizeMode: (mode) => {
+    set({ videoResizeMode: mode });
+    SettingsManager.save({ videoResizeMode: mode }).catch((error) =>
+      logger.info("Failed to persist videoResizeMode:", error)
+    );
+  },
   setVideoSource: (config) => set({ videoSource: config }),
   saveSettings: async () => {
     const { apiBaseUrl, m3uUrl, epgUrl, remoteInputEnabled, videoSource, autoSkipIntroOutro, hdSourcesOnly } = get();
@@ -142,6 +154,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       videoSource,
       autoSkipIntroOutro,
       hdSourcesOnly,
+      videoResizeMode: get().videoResizeMode,
     });
     if ( currentApiBaseUrl !== processedApiBaseUrl) {
       await AsyncStorage.setItem('authCookies', '');
