@@ -85,8 +85,16 @@ export class PlayerSettingsManager {
     if (settings.introEndTime !== undefined || settings.outroStartTime !== undefined || settings.playbackRate !== undefined) {
       allSettings[key] = { ...allSettings[key], ...settings };
     } else {
-      // If all are undefined, remove the key
-      delete allSettings[key];
+      // 片头/片尾都被清除时，只清这两个字段，保留同 key 下已保存的倍速等设置；
+      // 若该 key 下已无任何有效字段，才删除整个 key。
+      const existing = allSettings[key];
+      if (existing) {
+        delete existing.introEndTime;
+        delete existing.outroStartTime;
+        if (existing.playbackRate === undefined) {
+          delete allSettings[key];
+        }
+      }
     }
     await AsyncStorage.setItem(STORAGE_KEYS.PLAYER_SETTINGS, JSON.stringify(allSettings));
   }

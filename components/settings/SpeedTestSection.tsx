@@ -15,7 +15,7 @@ interface SpeedTestSectionProps {
 }
 
 export const SpeedTestSection: React.FC<SpeedTestSectionProps> = ({ onFocus, onBlur }) => {
-  const { results, isTesting, done, currentName, currentMbps, progressDone, progressTotal, runTest } =
+  const { results, isTesting, done, currentName, currentMbps, progressDone, progressTotal, runTest, cancelTest } =
     useSpeedTestStore();
   const [isFocused, setIsFocused] = React.useState(false);
   const animationStyle = useButtonAnimation(isFocused, 1.05);
@@ -74,7 +74,7 @@ export const SpeedTestSection: React.FC<SpeedTestSectionProps> = ({ onFocus, onB
         </Animated.View>
       </Pressable>
 
-      <Modal visible={isTesting} transparent animationType="fade">
+      <Modal visible={isTesting} transparent animationType="fade" onRequestClose={cancelTest}>
         <View style={styles.overlay}>
           <View style={styles.card}>
             {done ? (
@@ -93,6 +93,10 @@ export const SpeedTestSection: React.FC<SpeedTestSectionProps> = ({ onFocus, onB
                 >
                   {currentMbps != null ? formatSpeed(currentMbps) : "测速中..."}
                 </ThemedText>
+                {/* 全量测速可能长达数分钟，必须允许中途取消（已完成的结果会保留） */}
+                <Pressable style={styles.cancelButton} onPress={cancelTest} hasTVPreferredFocus>
+                  <ThemedText style={styles.cancelButtonText}>取消（保留已完成结果）</ThemedText>
+                </Pressable>
               </>
             )}
           </View>
@@ -140,4 +144,12 @@ const styles = StyleSheet.create({
   nameText: { color: "white", fontSize: 20, fontWeight: "bold", marginTop: 8, maxWidth: 360, textAlign: "center" },
   speedText: { color: "#ccc", fontSize: 22, fontWeight: "bold", marginTop: 8 },
   doneText: { color: Colors.dark.primary, fontSize: 24, fontWeight: "bold" },
+  cancelButton: {
+    marginTop: 20,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: "#3a3a3c",
+  },
+  cancelButtonText: { fontSize: 15, fontWeight: "bold", color: "white" },
 });

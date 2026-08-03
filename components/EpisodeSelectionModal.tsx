@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { View, Text, StyleSheet, Modal, FlatList } from "react-native";
 import { StyledButton } from "./StyledButton";
 import usePlayerStore from "@/stores/playerStore";
@@ -10,6 +10,14 @@ export const EpisodeSelectionModal: React.FC<EpisodeSelectionModalProps> = () =>
 
   const [episodeGroupSize] = useState(30);
   const [selectedEpisodeGroup, setSelectedEpisodeGroup] = useState(Math.floor(currentEpisodeIndex / episodeGroupSize));
+
+  // 每次打开选集弹窗时，重新定位到当前播放集所在的分组，
+  // 避免换集后再次打开仍停留在旧分组。
+  useEffect(() => {
+    if (showEpisodeModal) {
+      setSelectedEpisodeGroup(Math.floor(Math.max(currentEpisodeIndex, 0) / episodeGroupSize));
+    }
+  }, [showEpisodeModal, currentEpisodeIndex, episodeGroupSize]);
 
   const onSelectEpisode = (index: number) => {
     playEpisode(index);

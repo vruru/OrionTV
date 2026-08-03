@@ -27,8 +27,9 @@ const getRemotePageHTML = () => {
       <button onclick="send()">发送</button>
     </div>
     <script>
+      // 注意：这里的 JS 运行在手机浏览器里，不能引用 App 侧的 logger
       window.addEventListener('DOMContentLoaded', () => {
-        fetch('/handshake', { method: 'POST' }).catch(err => logger.info('Handshake failed:', err));
+        fetch('/handshake', { method: 'POST' }).catch(err => console.error('Handshake failed:', err));
       });
       function send() {
         const input = document.getElementById("text");
@@ -39,7 +40,7 @@ const getRemotePageHTML = () => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ message: value })
           })
-          .catch(err => logger.info('Message send failed:', err));
+          .catch(err => console.error('Message send failed:', err));
           input.value = '';
         }
       }

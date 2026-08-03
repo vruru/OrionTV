@@ -5,6 +5,10 @@ import usePlayerStore from "@/stores/playerStore";
 // 定时器延迟时间（毫秒）
 const CONTROLS_TIMEOUT = 5000;
 
+// Coarse jump for the timeline row (1 minute per press).
+// 放在模块级，避免组件内常量导致的 exhaustive-deps 告警。
+const TIMELINE_STEP_MS = 60 * 1000;
+
 /**
  * 管理播放器控件的显示/隐藏、遥控器事件和自动隐藏定时器。
  * @returns onScreenPress - 一个函数，用于处理屏幕点击事件，以显示控件并重置定时器。
@@ -21,9 +25,6 @@ export const useTVRemoteHandler = () => {
     setPreviewFocusRow,
     commitPreview,
   } = usePlayerStore();
-
-  // Coarse jump for the timeline row (1 minute per press).
-  const TIMELINE_STEP_MS = 60 * 1000;
 
   const controlsTimer = useRef<NodeJS.Timeout | null>(null);
   const fastForwardIntervalRef = useRef<NodeJS.Timeout | null>(null);

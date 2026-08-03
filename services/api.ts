@@ -159,12 +159,38 @@ export class API {
     return this.reloginPromise;
   }
 
-  private async _fetch(url: string, options: RequestInit = {}, allowRetry = true): Promise<Response> {
+  private async _fetch(url: string, options: RequestInit = {}, allowRetry = true, timeoutMs?: number): Promise<Response> {
     if (!this.baseURL) {
       throw new Error("API_URL_NOT_SET");
     }
 
-    const response = await fetch(`${this.baseURL}${url}`, options);
+    // Optional timeout: guards against a slow/hanging host blocking the UI
+    // indefinitely (e.g. a dead live source configured on the backend).
+    // The caller's own AbortSignal (if any) is forwarded into the same controller.
+    let controller: AbortController | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    if (timeoutMs && timeoutMs > 0) {
+      controller = new AbortController();
+      const c = controller;
+      if (options.signal) {
+        if (options.signal.aborted) {
+          c.abort();
+        } else {
+          options.signal.addEventListener("abort", () => c.abort());
+        }
+      }
+      timeoutId = setTimeout(() => c.abort(), timeoutMs);
+    }
+
+    let response: Response;
+    try {
+      response = await fetch(
+        `${this.baseURL}${url}`,
+        controller ? { ...options, signal: controller.signal } : options
+      );
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
 
     if (response.status === 401) {
       // Session likely expired / cookie jar cleared. Try to recover silently
@@ -172,7 +198,7 @@ export class API {
       if (allowRetry && url !== "/api/login") {
         const reloggedIn = await this._tryRelogin();
         if (reloggedIn) {
-          return this._fetch(url, options, false);
+          return this._fetch(url, options, false, timeoutMs);
         }
       }
       throw new Error("UNAUTHORIZED");
@@ -316,14 +342,16 @@ export class API {
   }
 
   // --- Live TV (managed by the backend, e.g. LunaTV) ---
+  // These two use an explicit timeout: a dead or slow live source configured on
+  // the backend must not leave the live screen spinning forever.
   async getLiveSources(): Promise<LiveSource[]> {
-    const response = await this._fetch("/api/live/sources");
+    const response = await this._fetch("/api/live/sources", {}, true, 8000);
     const json = await response.json();
     return (json?.data ?? []) as LiveSource[];
   }
 
   async getLiveChannels(sourceKey: string): Promise<LiveChannel[]> {
-    const response = await this._fetch(`/api/live/channels?source=${encodeURIComponent(sourceKey)}`);
+    const response = await this._fetch(`/api/live/channels?source=${encodeURIComponent(sourceKey)}`, {}, true, 8000);
     const json = await response.json();
     return (json?.data ?? []) as LiveChannel[];
   }
