@@ -1,10 +1,31 @@
 import TcpSocket from 'react-native-tcp-socket';
 import NetInfo from '@react-native-community/netinfo';
 import Logger from '@/utils/Logger';
+import {
+  WebSocketFrameParser,
+  computeAcceptKey,
+  encodeTextFrame,
+  encodePongFrame,
+  encodeCloseFrame,
+  utf8Encode,
+} from './webSocketProtocol';
 
 const logger = Logger.withTag('TCPHttpServer');
 
 const PORT = 12346;
+
+/** WebSocket 连接抽象：对调用方暴露发送文本与关闭能力 */
+export interface WebSocketConnection {
+  id: number;
+  sendText: (text: string) => void;
+  close: () => void;
+}
+
+interface WebSocketHandler {
+  onOpen?: (conn: WebSocketConnection) => void;
+  onMessage: (conn: WebSocketConnection, text: string) => void;
+  onClose?: (conn: WebSocketConnection) => void;
+}
 
 interface HttpRequest {
   method: string;
@@ -25,6 +46,8 @@ class TCPHttpServer {
   private server: TcpSocket.Server | null = null;
   private isRunning = false;
   private requestHandler: RequestHandler | null = null;
+  private wsHandler: WebSocketHandler | null = null;
+  private connSeq = 0;
 
   constructor() {
     this.server = null;
@@ -98,6 +121,17 @@ class TCPHttpServer {
     this.requestHandler = handler;
   }
 
+  /** 注册 WebSocket 处理器；之后带 Upgrade 头的连接会升级为 WS，不再走 HTTP 路径 */
+  public setWebSocketHandler(handler: WebSocketHandler) {
+    this.wsHandler = handler;
+  }
+
+  /** tcp-socket 的 data 可能是 Buffer 或 string，统一转成字节数组 */
+  private toBytes(data: string | Buffer): Uint8Array {
+    if (typeof data === 'string') return utf8Encode(data);
+    return new Uint8Array(data);
+  }
+
   public async start(): Promise<string> {
     const netState = await NetInfo.fetch();
     let ipAddress: string | null = null;
@@ -119,12 +153,61 @@ class TCPHttpServer {
       try {
         this.server = TcpSocket.createServer((socket: TcpSocket.Socket) => {
           logger.debug('[TCPHttpServer] Client connected');
-          
+
           let requestData = '';
-          
+          let upgraded = false;
+          const frameParser = new WebSocketFrameParser();
+          const connId = ++this.connSeq;
+          const conn: WebSocketConnection = {
+            id: connId,
+            sendText: (text: string) => {
+              try {
+                socket.write(encodeTextFrame(text));
+              } catch (e) {
+                logger.info('[TCPHttpServer] WS send failed:', e);
+              }
+            },
+            close: () => {
+              try {
+                socket.write(encodeCloseFrame());
+              } catch {
+                // 忽略关闭时的写入错误
+              }
+              socket.end();
+            },
+          };
+
+          const handleWsBytes = (bytes: Uint8Array) => {
+            for (const ev of frameParser.push(bytes)) {
+              if (ev.type === 'message') {
+                this.wsHandler?.onMessage(conn, ev.text);
+              } else if (ev.type === 'ping') {
+                try {
+                  socket.write(encodePongFrame(ev.payload));
+                } catch {
+                  // 忽略
+                }
+              } else if (ev.type === 'close') {
+                try {
+                  socket.write(encodeCloseFrame());
+                } catch {
+                  // 忽略
+                }
+                this.wsHandler?.onClose?.(conn);
+                socket.end();
+              }
+            }
+          };
+
           socket.on('data', async (data: string | Buffer) => {
+            // 已升级的连接：全部字节交给 WebSocket 帧解析器
+            if (upgraded) {
+              handleWsBytes(this.toBytes(data));
+              return;
+            }
+
             requestData += data.toString();
-            
+
             // 必须等整个请求收完再处理：头部以 \r\n\r\n 结束，且 body 要达到
             // Content-Length 指定的字节数。之前只要看到头部结束符就解析，
             // 如果 POST body 在后续的 TCP 分片里才到达，就会被截断解析成无效 JSON。
@@ -133,6 +216,31 @@ class TCPHttpServer {
               return; // 头部还没收完
             }
             const headerText = requestData.substring(0, headerEnd);
+
+            // WebSocket 升级请求（GET + Upgrade: websocket）：完成握手后切换到帧模式
+            if (this.wsHandler && /upgrade:\s*websocket/i.test(headerText)) {
+              const keyMatch = /sec-websocket-key:\s*(\S+)/i.exec(headerText);
+              if (keyMatch) {
+                const accept = computeAcceptKey(keyMatch[1]);
+                socket.write(
+                  'HTTP/1.1 101 Switching Protocols\r\n' +
+                    'Upgrade: websocket\r\n' +
+                    'Connection: Upgrade\r\n' +
+                    `Sec-WebSocket-Accept: ${accept}\r\n\r\n`
+                );
+                upgraded = true;
+                logger.debug(`[TCPHttpServer] WebSocket upgraded (conn ${connId})`);
+                this.wsHandler.onOpen?.(conn);
+                // 头部之后若还有残留字节，按 WS 帧继续解析
+                const rest = requestData.substring(headerEnd + 4);
+                requestData = '';
+                if (rest.length > 0) {
+                  handleWsBytes(utf8Encode(rest));
+                }
+                return;
+              }
+            }
+
             const contentLengthMatch = /content-length:\s*(\d+)/i.exec(headerText);
             const contentLength = contentLengthMatch ? parseInt(contentLengthMatch[1], 10) : 0;
             if (contentLength > 0) {
@@ -178,6 +286,9 @@ class TCPHttpServer {
           });
 
           socket.on('close', () => {
+            if (upgraded) {
+              this.wsHandler?.onClose?.(conn);
+            }
             logger.debug('[TCPHttpServer] Client disconnected');
           });
         });
