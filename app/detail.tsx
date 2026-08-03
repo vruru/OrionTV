@@ -5,6 +5,7 @@ import { ThemedView } from "@/components/ThemedView";
 import { ThemedText } from "@/components/ThemedText";
 import { StyledButton } from "@/components/StyledButton";
 import VideoLoadingAnimation from "@/components/VideoLoadingAnimation";
+import RelatedVideos from "@/components/RelatedVideos";
 import useDetailStore from "@/stores/detailStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useSpeedTestStore } from "@/stores/speedTestStore";
@@ -206,6 +207,11 @@ export default function DetailScreen() {
               ))}
             </View>
           </View>
+
+          {/* 相关推荐（同导演/同演员） */}
+          <View style={{ paddingHorizontal: spacing }}>
+            <RelatedVideos detail={detail} />
+          </View>
         </ScrollView>
       );
     } else {
@@ -292,6 +298,9 @@ export default function DetailScreen() {
               </ScrollView>
             </View>
           </View>
+
+          {/* 相关推荐（同导演/同演员） */}
+          <RelatedVideos detail={detail} />
         </ScrollView>
       );
     }
