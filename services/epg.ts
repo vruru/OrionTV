@@ -40,12 +40,21 @@ export const parseXmltvTime = (raw: string): number => {
   return ms;
 };
 
-/** 频道名规范化：用于在 tvg-id 缺失时按名称兜底匹配 EPG */
-export const normalizeChannelName = (name: string): string =>
-  name
+/** 频道名规范化：合并常见清晰度/编码后缀及 CCTV 的全称、短名称变体。 */
+export const normalizeChannelName = (name: string): string => {
+  const compact = name
     .toLowerCase()
-    .replace(/[\s\-_]/g, '')
-    .replace(/(高清|超清|hd|fhd|4k|8k|频道|卫视)+$/g, '');
+    .replace(/[（(][^）)]*(?:[）)]|$)/g, '')
+    .replace(/(?:hevc|hdr|h265|h264|uhd|fhd|aac|ac3|4k|8k|hd|sd|高清|超清|标清|蓝光|无台标)/g, '')
+    .replace(/[\s\-_.·]/g, '');
+
+  // EPG 里同时存在“CCTV1 综合”和“CCTV-1”等别名，真正的节目数据经常只挂
+  // 在短名称下面。数字频道统一为 cctv+编号，保留 CCTV5+ 的加号。
+  const cctvNumber = compact.match(/^cctv(\d+\+?)/);
+  if (cctvNumber) return cctvNumber[0];
+
+  return compact.replace(/(?:频道|卫视)+$/g, '');
+};
 
 const MAX_EPG_BYTES = 40 * 1024 * 1024; // 超过 40MB 的 EPG 拒绝解析，避免卡死
 const EPG_CACHE_TTL = 10 * 60 * 1000;
@@ -77,6 +86,31 @@ const addChannelMatch = (target: EpgAccumulator, match: RegExpExecArray) => {
   }
 };
 
+/**
+ * M3U 名称可能对应 XMLTV 里的多个别名。不能只取频道表中第一个别名，因为
+ * 第一个常常只有 <channel> 定义，节目实际挂在另一个 id 下。
+ */
+const resolveWantedChannelIds = (
+  target: EpgAccumulator,
+  wantedChannelIds?: Set<string>
+): Set<string> | undefined => {
+  if (!wantedChannelIds || wantedChannelIds.size === 0) return wantedChannelIds;
+
+  const resolved = new Set(wantedChannelIds);
+  const normalizedWanted = new Set(
+    [...wantedChannelIds].map(normalizeChannelName).filter(Boolean)
+  );
+  for (const [id, displayName] of target.channelDisplayNames) {
+    if (
+      normalizedWanted.has(normalizeChannelName(id)) ||
+      normalizedWanted.has(normalizeChannelName(displayName))
+    ) {
+      resolved.add(id);
+    }
+  }
+  return resolved;
+};
+
 const addProgrammeMatch = (
   target: EpgAccumulator,
   match: RegExpExecArray,
@@ -104,11 +138,32 @@ const finishEpgData = (target: EpgAccumulator, fetchedAt: number): EpgData => {
   for (const list of target.programmesByChannel.values()) {
     list.sort((a, b) => a.start - b.start);
   }
+
+  // 同名别名优先指向确实带节目数据的 id，避免命中“空壳”频道定义。
+  for (const [id, displayName] of target.channelDisplayNames) {
+    if (!target.programmesByChannel.has(id)) continue;
+    const normalized = normalizeChannelName(displayName);
+    if (normalized) target.channelIdsByNormalizedName.set(normalized, id);
+  }
+  // 某些 XMLTV 源的 programme channel 没有对应的 channel 定义，仍可按 id 匹配。
+  for (const id of target.programmesByChannel.keys()) {
+    const normalized = normalizeChannelName(id);
+    if (normalized && !target.channelIdsByNormalizedName.has(normalized)) {
+      target.channelIdsByNormalizedName.set(normalized, id);
+    }
+  }
   return { ...target, fetchedAt };
 };
 
-/** 把执行权还给 RN 一帧，让播放器状态和遥控器事件可以继续被处理。 */
-const yieldToUi = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+/** 把执行权还给 RN 一整帧，让播放器状态和遥控器事件优先被处理。 */
+const yieldToUi = () =>
+  new Promise<void>((resolve) => {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => resolve());
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
 
 const throwIfAborted = (signal?: AbortSignal) => {
   if (!signal?.aborted) return;
@@ -136,6 +191,8 @@ export const parseEpgXml = (
     addChannelMatch(target, cm);
   }
 
+  const effectiveWantedIds = resolveWantedChannelIds(target, wantedChannelIds);
+
   // 2. 节目单：<programme start="..." stop="..." channel="x"> <title...>标题</title> </programme>
   //    保留过去 54 小时（配合 NAS 回看 48h 窗口，多留 6h 余量）到未来 24 小时的节目
   const windowStart = now - 54 * 60 * 60 * 1000;
@@ -143,7 +200,7 @@ export const parseEpgXml = (
   const progRe = new RegExp(PROGRAMME_RE_SOURCE, 'g');
   let pm: RegExpExecArray | null;
   while ((pm = progRe.exec(xmlText)) !== null) {
-    addProgrammeMatch(target, pm, windowStart, windowEnd, wantedChannelIds);
+    addProgrammeMatch(target, pm, windowStart, windowEnd, effectiveWantedIds);
   }
 
   return finishEpgData(target, now);
@@ -164,37 +221,35 @@ export const parseEpgXmlAsync = async (
   const channelRe = new RegExp(CHANNEL_RE_SOURCE, 'g');
   let cm: RegExpExecArray | null;
   let scanned = 0;
+  let sliceStartedAt = Date.now();
   while ((cm = channelRe.exec(xmlText)) !== null) {
     addChannelMatch(target, cm);
-    if (++scanned % 100 === 0) {
+    scanned++;
+    if (Date.now() - sliceStartedAt >= 4 || scanned % 100 === 0) {
       await yieldToUi();
       throwIfAborted(signal);
+      sliceStartedAt = Date.now();
     }
   }
 
-  // M3U 经常只有频道名而不是 XMLTV channel id。频道表已经解析完毕，先把
-  // 名称候选换算成真正的 id，再过滤节目，减少后续保留对象和排序开销。
-  let effectiveWantedIds = wantedChannelIds;
-  if (wantedChannelIds && wantedChannelIds.size > 0) {
-    // 原值本身可能就是 XMLTV id；同时补上按 display-name 命中的 id。
-    effectiveWantedIds = new Set<string>(wantedChannelIds);
-    for (const candidate of wantedChannelIds) {
-      if (target.channelDisplayNames.has(candidate)) effectiveWantedIds.add(candidate);
-      const matchedId = target.channelIdsByNormalizedName.get(normalizeChannelName(candidate));
-      if (matchedId) effectiveWantedIds.add(matchedId);
-    }
-  }
+  // 频道表解析完后一次性展开所有名称别名，再过滤节目对象。
+  const effectiveWantedIds = resolveWantedChannelIds(target, wantedChannelIds);
 
   const windowStart = now - 54 * 60 * 60 * 1000;
   const windowEnd = now + 24 * 60 * 60 * 1000;
   const progRe = new RegExp(PROGRAMME_RE_SOURCE, 'g');
   let pm: RegExpExecArray | null;
   scanned = 0;
+  sliceStartedAt = Date.now();
   while ((pm = progRe.exec(xmlText)) !== null) {
     addProgrammeMatch(target, pm, windowStart, windowEnd, effectiveWantedIds);
-    if (++scanned % 250 === 0) {
+    scanned++;
+    // 每个同步片段最多占用约 4ms；即使是性能较弱的电视盒子，也会在一帧内
+    // 把执行权还给播放器和遥控事件。250 条为快速设备上的强制让步上限。
+    if (Date.now() - sliceStartedAt >= 4 || scanned % 250 === 0) {
       await yieldToUi();
       throwIfAborted(signal);
+      sliceStartedAt = Date.now();
     }
   }
 

@@ -44,6 +44,13 @@ describe("epg", () => {
       expect(normalizeChannelName("某频道 4K")).toBe("某");
     });
 
+    it("应该把 CCTV 全称、短名称和编码变体归到同一频道", () => {
+      expect(normalizeChannelName("CCTV1 综合")).toBe("cctv1");
+      expect(normalizeChannelName("CCTV-1")).toBe("cctv1");
+      expect(normalizeChannelName("CCTV5+ 体育赛事 4K HEVC HDR")).toBe("cctv5+");
+      expect(normalizeChannelName("北京卫视 4K HEVC HDR AAC")).toBe("北京");
+    });
+
     it("前后空格与下划线也应去掉", () => {
       expect(normalizeChannelName(" 凤凰_卫视 ")).toBe("凤凰");
     });
@@ -129,6 +136,19 @@ describe("epg", () => {
       const data = await parseEpgXmlAsync(SAMPLE_XML, new Set(["湖南卫视"]), NOW);
       expect(data.programmesByChannel.has("cctv1")).toBe(false);
       expect(data.programmesByChannel.get("hunan")?.map((p) => p.title)).toEqual(["快乐大本营"]);
+    });
+
+    it("同一频道有多个 EPG 别名时应选中真正带节目的 id", async () => {
+      const aliasXml = `<tv>
+        <channel id="CCTV1 综合"><display-name>CCTV1 综合</display-name></channel>
+        <channel id="CCTV-1"><display-name>CCTV-1</display-name></channel>
+        <programme start="${xmltvTime(NOW - 60000)}" stop="${xmltvTime(NOW + 60000)}" channel="CCTV-1">
+          <title>新闻节目</title>
+        </programme>
+      </tv>`;
+      const data = await parseEpgXmlAsync(aliasXml, new Set(["CCTV1 综合"]), NOW);
+      expect(data.programmesByChannel.get("CCTV-1")?.[0]?.title).toBe("新闻节目");
+      expect(findEpgChannelIdByName(data, "CCTV1 综合")).toBe("CCTV-1");
     });
 
     it("异步解析应响应页面失焦触发的中止信号", async () => {

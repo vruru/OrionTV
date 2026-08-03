@@ -30,7 +30,7 @@ const FAVORITES_GROUP = "我的收藏";
 
 // Convert backend live channels into the local Channel shape.
 const mapChannels = (
-  chans: { id?: string; name?: string; url: string; logo?: string; group?: string }[],
+  chans: { id?: string; tvgId?: string; name?: string; url: string; logo?: string; group?: string }[],
   fallbackGroup: string
 ): Channel[] =>
   chans
@@ -41,6 +41,7 @@ const mapChannels = (
       url: c.url,
       logo: c.logo || "",
       group: c.group || fallbackGroup || "Default",
+      tvgId: c.tvgId,
     }));
 
 // 在 EPG 数据里找频道的节目单：按 tvg-id / tvg-name / 名称兜底匹配
