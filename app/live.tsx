@@ -15,7 +15,7 @@ import { RemoteControlModal } from "@/components/RemoteControlModal";
 import { matchChannelSearch } from "@/utils/pinyin";
 import { nextResizeMode, RESIZE_MODE_LABELS } from "@/utils/resizeMode";
 import { EpgData, EpgProgramme, fetchEpg, getCurrentProgramme, buildEpgKeys, formatProgrammeTime } from "@/services/epg";
-import { fetchRecordedChannels, buildReplayUrl } from "@/services/replay";
+import { fetchRecordedChannels, buildReplayUrl, fetchCoverage } from "@/services/replay";
 import Logger from "@/utils/Logger";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
@@ -84,6 +84,8 @@ export default function LiveScreen() {
   const [recordedChannels, setRecordedChannels] = useState<Set<string>>(new Set());
   const [replayChannel, setReplayChannel] = useState<Channel | null>(null);
   const [replayCursor, setReplayCursor] = useState(0);
+  // 无 EPG 频道的兜底：按录制覆盖生成的小时块时段单（有值时优先于 EPG 节目单）
+  const [replayBlocks, setReplayBlocks] = useState<EpgProgramme[] | null>(null);
   const [replaySession, setReplaySession] = useState<{ url: string; title: string; channelName: string; channel: Channel } | null>(null);
   const replayCursorRef = useRef(0);
   const replayListRef = useRef<FlashList<EpgProgramme>>(null);
@@ -309,29 +311,20 @@ export default function LiveScreen() {
     return prog ? `${channel.name} · ${prog.title}（${formatProgrammeTime(prog)}）` : channel.name;
   };
 
-  // 回看：目标频道的完整节目单（EPG 含 78h 回溯窗口，配合 NAS 72h 录制档案）
-  const replayProgrammes = useMemo<EpgProgramme[]>(
-    () => (replayChannel ? findEpgProgrammes(epgData, replayChannel) : []),
-    [epgData, replayChannel]
-  );
+  // 回看：目标频道的完整节目单（EPG 含 78h 回溯窗口）；无 EPG 时用录制时段块兜底
+  const replayProgrammes = useMemo<EpgProgramme[]>(() => {
+    if (!replayChannel) return [];
+    if (replayBlocks) return replayBlocks;
+    return findEpgProgrammes(epgData, replayChannel);
+  }, [epgData, replayChannel, replayBlocks]);
   replayProgrammesRef.current = replayProgrammes;
 
-  // 频道表里长按确认键打开回看节目单：光标落在当前节目，否则落在最后一个已播节目
-  const openReplayList = (channel: Channel) => {
-    const serverUrl = useSettingsStore.getState().replayServerUrl;
-    if (!serverUrl) {
-      Toast.show({ type: "info", text1: "未配置回看服务", text2: "请在设置-直播源中填写回看服务地址" });
-      return;
-    }
-    if (!recordedChannelsRef.current.has(channel.name)) {
-      Toast.show({ type: "info", text1: "该频道未开启录制回看" });
-      return;
-    }
-    const list = findEpgProgrammes(epgDataRef.current, channel);
-    if (list.length === 0) {
-      Toast.show({ type: "info", text1: "该频道暂无节目单", text2: "请确认已在设置中填写 EPG 地址" });
-      return;
-    }
+  const closeReplay = () => {
+    setReplayChannel(null);
+    setReplayBlocks(null);
+  };
+
+  const openReplayWithList = (channel: Channel, list: EpgProgramme[], isBlocks: boolean) => {
     const now = Date.now();
     let idx = list.findIndex((p) => p.start <= now && now < p.stop);
     if (idx === -1) {
@@ -345,7 +338,51 @@ export default function LiveScreen() {
     }
     replayCursorRef.current = idx;
     setReplayCursor(idx);
+    setReplayBlocks(isBlocks ? list : null);
     setReplayChannel(channel);
+  };
+
+  // 无 EPG 频道的降级：按录制覆盖情况生成"小时块"时段单，只保留已录完的完整小时
+  const openReplayByTimeBlocks = async (channel: Channel, serverUrl: string) => {
+    const segs = await fetchCoverage(serverUrl, channel.name);
+    if (segs.length === 0) {
+      Toast.show({ type: "info", text1: "该频道暂时没有录像", text2: "录制是滚动进行的，稍后再试" });
+      return;
+    }
+    const hours = new Set<number>();
+    for (const s of segs) {
+      hours.add(Math.floor(s / 3600000));
+      hours.add(Math.floor((s + 600000) / 3600000)); // 分片跨整点时两块都算有数据
+    }
+    const now = Date.now();
+    const list: EpgProgramme[] = [...hours]
+      .sort((a, b) => a - b)
+      .map((h) => ({ channel: channel.name, start: h * 3600000, stop: h * 3600000 + 3600000, title: "时段回看" }))
+      .filter((b) => b.stop <= now);
+    if (list.length === 0) {
+      Toast.show({ type: "info", text1: "该频道暂时没有录完的完整时段" });
+      return;
+    }
+    openReplayWithList(channel, list, true);
+  };
+
+  // 频道表里菜单键打开回看面板：有 EPG 用节目单，没有则按录制时段回看
+  const openReplayList = (channel: Channel) => {
+    const serverUrl = useSettingsStore.getState().replayServerUrl;
+    if (!serverUrl) {
+      Toast.show({ type: "info", text1: "未配置回看服务", text2: "请在设置-直播源中填写回看服务地址" });
+      return;
+    }
+    if (!recordedChannelsRef.current.has(channel.name)) {
+      Toast.show({ type: "info", text1: "该频道未开启录制回看" });
+      return;
+    }
+    const list = findEpgProgrammes(epgDataRef.current, channel);
+    if (list.length === 0) {
+      void openReplayByTimeBlocks(channel, serverUrl);
+      return;
+    }
+    openReplayWithList(channel, list, false);
   };
 
   const moveReplayCursor = (delta: number) => {
@@ -375,7 +412,7 @@ export default function LiveScreen() {
     }
     const url = buildReplayUrl(serverUrl, channel.name, prog.start, prog.stop);
     setReplaySession({ url, title: prog.title, channelName: channel.name, channel });
-    setReplayChannel(null);
+    closeReplay();
   };
 
   const exitReplay = () => setReplaySession(null);
@@ -585,7 +622,7 @@ export default function LiveScreen() {
           case "menu":
           case "contextMenu":
           case "back":
-            setReplayChannel(null);
+            closeReplay();
             break;
         }
         return;
@@ -848,7 +885,7 @@ export default function LiveScreen() {
         animationType="slide"
         transparent={true}
         visible={!!replayChannel}
-        onRequestClose={() => setReplayChannel(null)}
+        onRequestClose={closeReplay}
       >
         <View style={dynamicStyles.modalContainer}>
           <View style={dynamicStyles.modalContent}>
