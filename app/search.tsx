@@ -100,6 +100,7 @@ export default function SearchScreen() {
     Keyboard.dismiss();
     setSuggestions([]); // 发起搜索后收起建议
     addHistory(term);
+    setKeyword(""); // 清空输入框：TV 上删除字符不便，残留关键词会挡住搜索历史展示
     setLoading(true);
     setError(null);
     try {
@@ -204,8 +205,8 @@ export default function SearchScreen() {
         </View>
       )}
 
-      {/* 搜索历史：初始空态显示，点词即搜，可一键清空 */}
-      {!keyword.trim() && results.length === 0 && history.length > 0 && (
+      {/* 搜索历史：关键词清空后显示（TV 上搜索结果与历史可同屏），点词即搜，可一键清空 */}
+      {!keyword.trim() && history.length > 0 && (
         <View style={dynamicStyles.historySection}>
           <View style={dynamicStyles.historyHeader}>
             <ThemedText style={dynamicStyles.historyTitle}>搜索历史</ThemedText>

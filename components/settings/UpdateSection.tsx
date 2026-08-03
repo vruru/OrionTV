@@ -121,14 +121,37 @@ export function UpdateSection() {
       {/* EAS OTA 热更新：JS bundle 级更新，无需重装应用 */}
       <View style={styles.otaDivider} />
       <ThemedText style={styles.otaTitle}>热更新（OTA）</ThemedText>
+
+      {/* 诊断信息始终显示：用于排查正式构建中热更新未启用的问题 */}
+      <View style={styles.row}>
+        <ThemedText style={styles.label}>状态</ThemedText>
+        <ThemedText style={[styles.value, otaSupported ? styles.latestVersion : styles.errorText]}>
+          {otaSupported ? "已启用" : "未启用"}
+        </ThemedText>
+      </View>
+      <View style={styles.row}>
+        <ThemedText style={styles.label}>通道 / 运行时版本</ThemedText>
+        <ThemedText style={styles.value} numberOfLines={1}>
+          {Updates.channel || "默认"} / {Updates.runtimeVersion || "未知"}
+        </ThemedText>
+      </View>
+      <View style={styles.row}>
+        <ThemedText style={styles.label}>更新 ID</ThemedText>
+        <ThemedText style={styles.value} numberOfLines={1}>
+          {Updates.updateId ? Updates.updateId.slice(0, 8) : "内嵌包"}
+        </ThemedText>
+      </View>
+      {Updates.isEmergencyLaunch && (
+        <View style={styles.row}>
+          <ThemedText style={styles.label}>紧急回退</ThemedText>
+          <ThemedText style={[styles.value, styles.errorText]} numberOfLines={2}>
+            {Updates.emergencyLaunchReason || "更新异常，已回退到内嵌包"}
+          </ThemedText>
+        </View>
+      )}
+
       {otaSupported ? (
         <>
-          <View style={styles.row}>
-            <ThemedText style={styles.label}>通道 / 运行时版本</ThemedText>
-            <ThemedText style={styles.value} numberOfLines={1}>
-              {Updates.channel || "默认"} / {Updates.runtimeVersion || "未知"}
-            </ThemedText>
-          </View>
           {otaMessage && (
             <View style={styles.row}>
               <ThemedText style={styles.label}>检查结果</ThemedText>
@@ -163,7 +186,9 @@ export function UpdateSection() {
           </View>
         </>
       ) : (
-        <ThemedText style={styles.hint}>开发模式下热更新不可用，请在正式构建中使用</ThemedText>
+        <ThemedText style={styles.hint}>
+          热更新在当前构建中未启用。请将上方状态信息反馈给开发者排查
+        </ThemedText>
       )}
 
       {/* {UPDATE_CONFIG.AUTO_CHECK && (

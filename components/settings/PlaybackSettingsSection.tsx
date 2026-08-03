@@ -1,13 +1,11 @@
 import React, { useCallback } from "react";
 import { View, Switch, StyleSheet, Pressable, Animated, Platform, TouchableOpacity } from "react-native";
-import { useTVEventHandler } from "react-native";
 import { ThemedText } from "@/components/ThemedText";
 import { SettingsSection } from "./SettingsSection";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { nextResizeMode, RESIZE_MODE_DESCRIPTIONS, RESIZE_MODE_LABELS } from "@/utils/resizeMode";
 import { useButtonAnimation } from "@/hooks/useAnimation";
 import { Colors } from "@/constants/Colors";
-import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 
 interface PlaybackSettingsSectionProps {
   onChanged: () => void;
@@ -34,24 +32,14 @@ interface CycleRowProps {
 const CycleRow: React.FC<CycleRowProps> = ({ name, description, valueLabel, onCycle }) => {
   const [isFocused, setIsFocused] = React.useState(false);
   const animationStyle = useButtonAnimation(isFocused, 1.05);
-  const deviceType = useResponsiveLayout().deviceType;
 
-  const handleTVEvent = React.useCallback(
-    (event: any) => {
-      if (isFocused && event.eventType === "select") {
-        onCycle();
-      }
-    },
-    [isFocused, onCycle]
-  );
-  useTVEventHandler(handleTVEvent);
-
+  // react-native-tvos 的 Pressable 在 TV 上按确认键即触发 onPress
   return (
     <Pressable
-      style={styles.settingItem}
+      style={[styles.settingItem, isFocused && styles.settingItemFocused]}
       onFocus={() => setIsFocused(true)}
       onBlur={() => setIsFocused(false)}
-      {...(Platform.isTV || deviceType !== "tv" ? undefined : { onPress: onCycle })}
+      onPress={onCycle}
     >
       <View style={styles.settingInfo}>
         <ThemedText style={styles.settingName}>{name}</ThemedText>
@@ -69,24 +57,14 @@ const CycleRow: React.FC<CycleRowProps> = ({ name, description, valueLabel, onCy
 const ToggleRow: React.FC<ToggleRowProps> = ({ name, description, value, onToggle }) => {
   const [isFocused, setIsFocused] = React.useState(false);
   const animationStyle = useButtonAnimation(isFocused, 1.05);
-  const deviceType = useResponsiveLayout().deviceType;
 
-  const handleTVEvent = React.useCallback(
-    (event: any) => {
-      if (isFocused && event.eventType === "select") {
-        onToggle(!value);
-      }
-    },
-    [isFocused, value, onToggle]
-  );
-  useTVEventHandler(handleTVEvent);
-
+  // react-native-tvos 的 Pressable 在 TV 上按确认键即触发 onPress
   return (
     <Pressable
-      style={styles.settingItem}
+      style={[styles.settingItem, isFocused && styles.settingItemFocused]}
       onFocus={() => setIsFocused(true)}
       onBlur={() => setIsFocused(false)}
-      {...(Platform.isTV || deviceType !== "tv" ? undefined : { onPress: () => onToggle(!value) })}
+      onPress={() => onToggle(!value)}
     >
       <View style={styles.settingInfo}>
         <ThemedText style={styles.settingName}>{name}</ThemedText>
@@ -171,6 +149,12 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     paddingVertical: 12,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+  },
+  // TV 聚焦行高亮
+  settingItemFocused: {
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
   },
   settingInfo: {
     flex: 1,
