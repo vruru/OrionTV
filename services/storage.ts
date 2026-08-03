@@ -41,6 +41,8 @@ export interface AppSettings {
   m3uUrl: string;
   // EPG 节目单地址（xmltv 格式），留空则不启用
   epgUrl: string;
+  // NAS 回看服务地址（replay-recorder），留空则不启用直播回看
+  replayServerUrl: string;
   // 自动跳过已标记的片头/片尾，并在片尾自动播放下一集
   autoSkipIntroOutro: boolean;
   // 仅显示 1080P 及以上分辨率的播放源
@@ -355,6 +357,7 @@ export class SettingsManager {
       },
       m3uUrl: "",
       epgUrl: "",
+      replayServerUrl: "",
       autoSkipIntroOutro: true,
       hdSourcesOnly: true,
       videoResizeMode: "contain",

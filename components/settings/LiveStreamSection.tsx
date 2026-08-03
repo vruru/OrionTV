@@ -21,17 +21,22 @@ export interface LiveStreamSectionRef {
   setInputValue: (value: string) => void;
 }
 
+// TV 遥控器上下键切换的目标输入框（模块级常量，引用稳定）
+const FIELD_ORDER = ["m3u", "epg", "replay"] as const;
+type Field = (typeof FIELD_ORDER)[number];
+
 export const LiveStreamSection = forwardRef<LiveStreamSectionRef, LiveStreamSectionProps>(
   ({ onChanged, onFocus, onBlur, onPress, onInputFocus, onInputBlur }, ref) => {
-    const { m3uUrl, setM3uUrl, epgUrl, setEpgUrl, remoteInputEnabled } = useSettingsStore();
+    const { m3uUrl, setM3uUrl, epgUrl, setEpgUrl, replayServerUrl, setReplayServerUrl, remoteInputEnabled } = useSettingsStore();
     const { serverUrl } = useRemoteControlStore();
     const [isInputFocused, setIsInputFocused] = useState(false);
     const [isEpgInputFocused, setIsEpgInputFocused] = useState(false);
+    const [isReplayInputFocused, setIsReplayInputFocused] = useState(false);
     const [isSectionFocused, setIsSectionFocused] = useState(false);
-    // TV 遥控器上下键切换的目标输入框
-    const [activeField, setActiveField] = useState<"m3u" | "epg">("m3u");
+    const [activeField, setActiveField] = useState<Field>("m3u");
     const inputRef = useRef<TextInput>(null);
     const epgInputRef = useRef<TextInput>(null);
+    const replayInputRef = useRef<TextInput>(null);
     const inputAnimationStyle = useButtonAnimation(isSectionFocused, 1.01);
 
     const handleUrlChange = (url: string) => {
@@ -56,10 +61,12 @@ export const LiveStreamSection = forwardRef<LiveStreamSectionRef, LiveStreamSect
       onBlur?.();
     };
 
-    // TV 上按确认键：聚焦当前目标输入框（M3U 或 EPG）
+    // TV 上按确认键：聚焦当前目标输入框（M3U / EPG / 回看服务）
     const handlePress = () => {
       if (activeField === "epg") {
         epgInputRef.current?.focus();
+      } else if (activeField === "replay") {
+        replayInputRef.current?.focus();
       } else {
         inputRef.current?.focus();
       }
@@ -69,14 +76,15 @@ export const LiveStreamSection = forwardRef<LiveStreamSectionRef, LiveStreamSect
     // TV 遥控器上下键切换目标输入框；确认键交给 onPress，避免双触发
     const handleTVEvent = React.useCallback(
       (event: any) => {
-        if (!isSectionFocused || isInputFocused || isEpgInputFocused) return;
-        if (event.eventType === "down") {
-          setActiveField("epg");
-        } else if (event.eventType === "up") {
-          setActiveField("m3u");
+        if (!isSectionFocused || isInputFocused || isEpgInputFocused || isReplayInputFocused) return;
+        const idx = FIELD_ORDER.indexOf(activeField);
+        if (event.eventType === "down" && idx < FIELD_ORDER.length - 1) {
+          setActiveField(FIELD_ORDER[idx + 1]);
+        } else if (event.eventType === "up" && idx > 0) {
+          setActiveField(FIELD_ORDER[idx - 1]);
         }
       },
-      [isSectionFocused, isInputFocused, isEpgInputFocused]
+      [isSectionFocused, isInputFocused, isEpgInputFocused, isReplayInputFocused, activeField]
     );
 
     useTVEventHandler(handleTVEvent);
@@ -162,6 +170,35 @@ export const LiveStreamSection = forwardRef<LiveStreamSectionRef, LiveStreamSect
               }}
               onBlur={() => {
                 setIsEpgInputFocused(false);
+                onInputBlur?.();
+              }}
+            />
+          </Animated.View>
+        </View>
+        <View style={styles.inputContainer}>
+          <View style={styles.titleContainer}>
+            <ThemedText style={styles.sectionTitle}>回看服务地址</ThemedText>
+            <ThemedText style={styles.subtitle}>选填，NAS 回看服务；填写后直播频道长按确认键可看回看</ThemedText>
+          </View>
+          <Animated.View style={inputAnimationStyle}>
+            <TextInput
+              ref={replayInputRef}
+              style={[styles.input, isReplayInputFocused && styles.inputFocused, isSectionFocused && activeField === "replay" && !isReplayInputFocused && styles.inputTarget]}
+              value={replayServerUrl}
+              onChangeText={(url) => {
+                setReplayServerUrl(url);
+                onChanged();
+              }}
+              placeholder="输入回看服务地址（如 http://192.168.0.251:50088）"
+              placeholderTextColor="#888"
+              autoCapitalize="none"
+              autoCorrect={false}
+              onFocus={() => {
+                setIsReplayInputFocused(true);
+                onInputFocus?.();
+              }}
+              onBlur={() => {
+                setIsReplayInputFocused(false);
                 onInputBlur?.();
               }}
             />

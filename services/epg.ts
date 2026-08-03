@@ -67,8 +67,8 @@ export const parseEpgXml = (
   }
 
   // 2. 节目单：<programme start="..." stop="..." channel="x"> <title...>标题</title> </programme>
-  //    只保留 stop > now - 1h 且 start < now + 24h 的，跳过历史与远期数据
-  const windowStart = now - 1 * 60 * 60 * 1000;
+  //    保留过去 78 小时（配合 NAS 回看 72h 窗口，多留 6h 余量）到未来 24 小时的节目
+  const windowStart = now - 78 * 60 * 60 * 1000;
   const windowEnd = now + 24 * 60 * 60 * 1000;
   const progRe =
     /<programme\s+[^>]*start="([^"]+)"[^>]*stop="([^"]+)"[^>]*channel="([^"]+)"[^>]*>([\s\S]*?)<\/programme>/g;

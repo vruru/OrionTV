@@ -12,6 +12,7 @@ interface SettingsState {
   apiBaseUrl: string;
   m3uUrl: string;
   epgUrl: string;
+  replayServerUrl: string;
   remoteInputEnabled: boolean;
   autoSkipIntroOutro: boolean;
   hdSourcesOnly: boolean;
@@ -30,6 +31,7 @@ interface SettingsState {
   setApiBaseUrl: (url: string) => void;
   setM3uUrl: (url: string) => void;
   setEpgUrl: (url: string) => void;
+  setReplayServerUrl: (url: string) => void;
   setRemoteInputEnabled: (enabled: boolean) => void;
   setAutoSkipIntroOutro: (enabled: boolean) => void;
   setHdSourcesOnly: (enabled: boolean) => void;
@@ -44,6 +46,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   apiBaseUrl: "",
   m3uUrl: "",
   epgUrl: "",
+  replayServerUrl: "",
   liveStreamSources: [],
   remoteInputEnabled: false,
   autoSkipIntroOutro: true,
@@ -62,6 +65,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       apiBaseUrl: settings.apiBaseUrl,
       m3uUrl: settings.m3uUrl,
       epgUrl: settings.epgUrl || "",
+      replayServerUrl: settings.replayServerUrl || "",
       remoteInputEnabled: settings.remoteInputEnabled || false,
       autoSkipIntroOutro: settings.autoSkipIntroOutro ?? true,
       hdSourcesOnly: settings.hdSourcesOnly ?? true,
@@ -112,6 +116,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setApiBaseUrl: (url) => set({ apiBaseUrl: url }),
   setM3uUrl: (url) => set({ m3uUrl: url }),
   setEpgUrl: (url) => set({ epgUrl: url }),
+  setReplayServerUrl: (url) => set({ replayServerUrl: url }),
   setRemoteInputEnabled: (enabled) => set({ remoteInputEnabled: enabled }),
   setAutoSkipIntroOutro: (enabled) => set({ autoSkipIntroOutro: enabled }),
   setHdSourcesOnly: (enabled) => set({ hdSourcesOnly: enabled }),
@@ -124,7 +129,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
   setVideoSource: (config) => set({ videoSource: config }),
   saveSettings: async () => {
-    const { apiBaseUrl, m3uUrl, epgUrl, remoteInputEnabled, videoSource, autoSkipIntroOutro, hdSourcesOnly } = get();
+    const { apiBaseUrl, m3uUrl, epgUrl, replayServerUrl, remoteInputEnabled, videoSource, autoSkipIntroOutro, hdSourcesOnly } = get();
     const currentSettings = await SettingsManager.get()
     const currentApiBaseUrl = currentSettings.apiBaseUrl;
     let processedApiBaseUrl = apiBaseUrl.trim();
@@ -150,6 +155,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       apiBaseUrl: processedApiBaseUrl,
       m3uUrl,
       epgUrl,
+      replayServerUrl,
       remoteInputEnabled,
       videoSource,
       autoSkipIntroOutro,
