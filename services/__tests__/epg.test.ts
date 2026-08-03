@@ -48,7 +48,7 @@ describe("epg", () => {
     });
   });
 
-  // now 固定为 2026-08-03 12:00:00 UTC，窗口 = [11:00, 次日 12:00)
+  // now 固定为 2026-08-03 12:00:00 UTC，窗口 = [now-78h（回看档案）, 次日 12:00)
   const NOW = Date.UTC(2026, 7, 3, 12, 0, 0);
   const xmltvTime = (ms: number) => {
     const d = new Date(ms);
@@ -72,7 +72,10 @@ describe("epg", () => {
   <programme start="${xmltvTime(NOW + 1800_000)}" stop="${xmltvTime(NOW + 5400_000)}" channel="cctv1">
     <title lang="zh">黄金剧场</title>
   </programme>
-  <programme start="${xmltvTime(NOW - 6 * 3600_000)}" stop="${xmltvTime(NOW - 5 * 3600_000)}" channel="cctv1">
+  <programme start="${xmltvTime(NOW - 50 * 3600_000)}" stop="${xmltvTime(NOW - 49 * 3600_000)}" channel="cctv1">
+    <title lang="zh">昨日回看节目（78h 窗口内应保留）</title>
+  </programme>
+  <programme start="${xmltvTime(NOW - 80 * 3600_000)}" stop="${xmltvTime(NOW - 79 * 3600_000)}" channel="cctv1">
     <title lang="zh">过期节目不应保留</title>
   </programme>
   <programme start="${xmltvTime(NOW + 30 * 3600_000)}" stop="${xmltvTime(NOW + 31 * 3600_000)}" channel="cctv1">
@@ -91,12 +94,17 @@ describe("epg", () => {
       expect(data.channelDisplayNames.get("cctv1")).toBe("CCTV1");
       expect(data.channelDisplayNames.get("hunan")).toBe("湖南卫视");
       const list = data.programmesByChannel.get("cctv1")!;
-      expect(list.map((p) => p.title)).toEqual(["新闻联播重播", "黄金剧场"]);
+      expect(list.map((p) => p.title)).toEqual([
+        "昨日回看节目（78h 窗口内应保留）",
+        "新闻联播重播",
+        "黄金剧场",
+      ]);
     });
 
-    it("应该过滤掉过期与超过 24 小时的节目，以及无标题节目", () => {
+    it("应该过滤掉超过 78 小时的过期节目、超过 24 小时的未来节目与无标题节目", () => {
       const data = parseEpgXml(SAMPLE_XML, undefined, NOW);
       const list = data.programmesByChannel.get("cctv1")!;
+      expect(list.some((p) => p.title.includes("昨日回看"))).toBe(true);
       expect(list.some((p) => p.title.includes("过期"))).toBe(false);
       expect(list.some((p) => p.title.includes("远期"))).toBe(false);
       expect(data.programmesByChannel.has("notitle")).toBe(false);
