@@ -1,11 +1,11 @@
 import React, { useCallback } from "react";
 import { View, Switch, StyleSheet, Pressable, Animated, Platform, TouchableOpacity } from "react-native";
-import { useTVEventHandler } from "react-native";
 import { ThemedText } from "@/components/ThemedText";
 import { SettingsSection } from "./SettingsSection";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useRemoteControlStore } from "@/stores/remoteControlStore";
 import { useButtonAnimation } from "@/hooks/useAnimation";
+import { useSectionEditMode } from "@/hooks/useSectionEditMode";
 import { Colors } from "@/constants/Colors";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 
@@ -13,63 +13,57 @@ interface RemoteInputSectionProps {
   onChanged: () => void;
   onFocus?: () => void;
   onBlur?: () => void;
-  onPress?: () => void;
+  onEditModeChange?: (editing: boolean) => void;
 }
 
-export const RemoteInputSection: React.FC<RemoteInputSectionProps> = ({ onChanged, onFocus, onBlur, onPress }) => {
-  const { remoteInputEnabled, setRemoteInputEnabled } = useSettingsStore();
+export const RemoteInputSection: React.FC<RemoteInputSectionProps> = ({ onChanged, onFocus, onBlur, onEditModeChange }) => {
+  const { remoteInputEnabled } = useSettingsStore();
   const { isServerRunning, serverUrl, error } = useRemoteControlStore();
-  const [isFocused, setIsFocused] = React.useState(false);
-  const animationStyle = useButtonAnimation(isFocused, 1.2);
+  const [isSectionFocused, setIsSectionFocused] = React.useState(false);
   const deviceType = useResponsiveLayout().deviceType;
+  const isTV = deviceType === "tv";
+  const animationStyle = useButtonAnimation(isSectionFocused, 1.2);
 
-  const handleToggle = useCallback(
-    (enabled: boolean) => {
-      setRemoteInputEnabled(enabled);
-      onChanged();
-    },
-    [setRemoteInputEnabled, onChanged]
-  );
+  const handleToggle = useCallback(() => {
+    const s = useSettingsStore.getState();
+    s.setRemoteInputEnabled(!s.remoteInputEnabled);
+    onChanged();
+  }, [onChanged]);
 
   const handleSectionFocus = () => {
-    setIsFocused(true);
+    setIsSectionFocused(true);
     onFocus?.();
   };
 
   const handleSectionBlur = () => {
-    setIsFocused(false);
+    setIsSectionFocused(false);
     onBlur?.();
   };
 
-  const handlePress = () => {
-    handleToggle(!remoteInputEnabled);
-  }
-
-  // TV遥控器事件处理
-  const handleTVEvent = React.useCallback(
-    (event: any) => {
-      if (isFocused && event.eventType === "select") {
-        handleToggle(!remoteInputEnabled);
-      }
-    },
-    [isFocused, remoteInputEnabled, handleToggle]
-  );
-
-  useTVEventHandler(handleTVEvent);
+  const { editMode, enterEditMode } = useSectionEditMode({
+    deviceType,
+    itemCount: 1,
+    isSectionFocused,
+    onActivate: handleToggle,
+    onEditModeChange,
+  });
 
   return (
-    <SettingsSection focusable onFocus={handleSectionFocus} onBlur={handleSectionBlur}
-      {...Platform.isTV || deviceType !== 'tv' ? undefined : { onPress: handlePress }}
-    >
-      <Pressable style={styles.settingItem} onFocus={handleSectionFocus} onBlur={handleSectionBlur}>
+    <SettingsSection focusable onFocus={handleSectionFocus} onBlur={handleSectionBlur} onPress={isTV ? enterEditMode : handleToggle}>
+      <Pressable focusable={!isTV} style={styles.settingItem} onPress={handleToggle}>
         <View style={styles.settingInfo}>
           <ThemedText style={styles.settingName}>启用远程输入</ThemedText>
+          {isTV && (
+            <ThemedText style={styles.settingDescription}>
+              {editMode ? "确认键切换开关 · 返回键退出" : "按确认键进入设置"}
+            </ThemedText>
+          )}
         </View>
         <Animated.View style={animationStyle}>
           { Platform.OS === 'ios' && Platform.isTV ? (
             <TouchableOpacity
               activeOpacity={0.8}
-              onPress={() => handlePress()}
+              onPress={handleToggle}
               style={styles.statusLabel}
             >
               <ThemedText style={styles.statusValue}>{remoteInputEnabled ? '已启用' : '已禁用'}</ThemedText>

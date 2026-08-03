@@ -1,11 +1,12 @@
-import React, { useState, useRef, useImperativeHandle, forwardRef } from "react";
-import { View, TextInput, StyleSheet, Animated } from "react-native";
-import { useTVEventHandler } from "react-native";
+import React, { useState, useRef, useImperativeHandle, forwardRef, useEffect } from "react";
+import { View, TextInput, StyleSheet, Animated, Keyboard } from "react-native";
 import { ThemedText } from "@/components/ThemedText";
 import { SettingsSection } from "./SettingsSection";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useRemoteControlStore } from "@/stores/remoteControlStore";
 import { useButtonAnimation } from "@/hooks/useAnimation";
+import { useSectionEditMode } from "@/hooks/useSectionEditMode";
+import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { Colors } from "@/constants/Colors";
 
 interface LiveStreamSectionProps {
@@ -15,29 +16,38 @@ interface LiveStreamSectionProps {
   onPress?: () => void;
   onInputFocus?: () => void;
   onInputBlur?: () => void;
+  onEditModeChange?: (editing: boolean) => void;
 }
 
 export interface LiveStreamSectionRef {
   setInputValue: (value: string) => void;
 }
 
-// TV 遥控器上下键切换的目标输入框（模块级常量，引用稳定）
+// TV 编辑模式下的目标输入框顺序（模块级常量，引用稳定）
 const FIELD_ORDER = ["m3u", "epg", "replay"] as const;
 type Field = (typeof FIELD_ORDER)[number];
 
 export const LiveStreamSection = forwardRef<LiveStreamSectionRef, LiveStreamSectionProps>(
-  ({ onChanged, onFocus, onBlur, onPress, onInputFocus, onInputBlur }, ref) => {
+  ({ onChanged, onFocus, onBlur, onPress, onInputFocus, onInputBlur, onEditModeChange }, ref) => {
     const { m3uUrl, setM3uUrl, epgUrl, setEpgUrl, replayServerUrl, setReplayServerUrl, remoteInputEnabled } = useSettingsStore();
     const { serverUrl } = useRemoteControlStore();
-    const [isInputFocused, setIsInputFocused] = useState(false);
-    const [isEpgInputFocused, setIsEpgInputFocused] = useState(false);
-    const [isReplayInputFocused, setIsReplayInputFocused] = useState(false);
+    const deviceType = useResponsiveLayout().deviceType;
+    const isTV = deviceType === "tv";
+
     const [isSectionFocused, setIsSectionFocused] = useState(false);
-    const [activeField, setActiveField] = useState<Field>("m3u");
+    // 当前激活编辑的输入框（仅 TV 编辑模式）：非激活的输入框 focusable=false，
+    // 防止系统焦点引擎绕过编辑模式直接钻进输入框
+    const [editingField, setEditingField] = useState<Field | null>(null);
     const inputRef = useRef<TextInput>(null);
     const epgInputRef = useRef<TextInput>(null);
     const replayInputRef = useRef<TextInput>(null);
     const inputAnimationStyle = useButtonAnimation(isSectionFocused, 1.01);
+
+    const inputRefs: Record<Field, React.RefObject<TextInput>> = {
+      m3u: inputRef,
+      epg: epgInputRef,
+      replay: replayInputRef,
+    };
 
     const handleUrlChange = (url: string) => {
       setM3uUrl(url);
@@ -61,49 +71,70 @@ export const LiveStreamSection = forwardRef<LiveStreamSectionRef, LiveStreamSect
       onBlur?.();
     };
 
-    // TV 上按确认键：聚焦当前目标输入框（M3U / EPG / 回看服务）
-    const handlePress = () => {
-      if (activeField === "epg") {
-        epgInputRef.current?.focus();
-      } else if (activeField === "replay") {
-        replayInputRef.current?.focus();
-      } else {
-        inputRef.current?.focus();
-      }
-      onPress?.();
+    // TV 编辑模式：确认键激活光标所在输入框并弹出系统键盘
+    const handleActivate = (index: number) => {
+      setEditingField(FIELD_ORDER[index]);
     };
 
-    // TV 遥控器上下键切换目标输入框；确认键交给 onPress，避免双触发
-    const handleTVEvent = React.useCallback(
-      (event: any) => {
-        if (!isSectionFocused || isInputFocused || isEpgInputFocused || isReplayInputFocused) return;
-        const idx = FIELD_ORDER.indexOf(activeField);
-        if (event.eventType === "down" && idx < FIELD_ORDER.length - 1) {
-          setActiveField(FIELD_ORDER[idx + 1]);
-        } else if (event.eventType === "up" && idx > 0) {
-          setActiveField(FIELD_ORDER[idx - 1]);
-        }
+    const dismissEditing = () => {
+      if (editingField) inputRefs[editingField].current?.blur();
+      Keyboard.dismiss();
+      setEditingField(null);
+    };
+
+    const { editMode, cursor, enterEditMode } = useSectionEditMode({
+      deviceType,
+      itemCount: FIELD_ORDER.length,
+      isSectionFocused,
+      isEditingTarget: !!editingField,
+      onActivate: handleActivate,
+      onDismissTarget: dismissEditing,
+      onEditModeChange,
+    });
+
+    // 激活后等一帧让 focusable=true 先生效，再程序聚焦弹键盘
+    useEffect(() => {
+      if (!editingField) return;
+      const t = setTimeout(() => {
+        inputRefs[editingField].current?.focus();
+      }, 50);
+      return () => clearTimeout(t);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [editingField]);
+
+    const makeInputProps = (field: Field) => ({
+      // TV 上只有被激活的输入框才可聚焦；其余平台保持默认
+      focusable: !isTV || editingField === field,
+      onFocus: () => {
+        if (isTV) setEditingField(field);
+        onInputFocus?.();
       },
-      [isSectionFocused, isInputFocused, isEpgInputFocused, isReplayInputFocused, activeField]
-    );
+      onBlur: () => {
+        if (isTV) setEditingField(null);
+        onInputBlur?.();
+      },
+    });
 
-    useTVEventHandler(handleTVEvent);
+    const inputStyleFor = (field: Field) => [
+      styles.input,
+      editingField === field && styles.inputFocused,
+      isTV && editMode && FIELD_ORDER[cursor] === field && editingField !== field && styles.inputTarget,
+    ];
 
-
-        const [selection, setSelection] = useState<{ start: number; end: number }>({
-          start: 0,
-          end: 0,
-        });
-        // 当用户手动移动光标或选中文本时，同步到 state（可选）
-        const onSelectionChange = ({
-          nativeEvent: { selection },
-        }: any) => {
-          setSelection(selection);
-        };
+    const [selection, setSelection] = useState<{ start: number; end: number }>({ start: 0, end: 0 });
+    const onSelectionChange = ({ nativeEvent: { selection } }: any) => {
+      setSelection(selection);
+    };
 
     return (
-      <SettingsSection focusable onFocus={handleSectionFocus} onBlur={handleSectionBlur}
-        onPress={handlePress}
+      <SettingsSection
+        focusable
+        onFocus={handleSectionFocus}
+        onBlur={handleSectionBlur}
+        onPress={() => {
+          enterEditMode();
+          onPress?.();
+        }}
       >
         <View style={styles.inputContainer}>
           <View style={styles.titleContainer}>
@@ -111,38 +142,25 @@ export const LiveStreamSection = forwardRef<LiveStreamSectionRef, LiveStreamSect
             {remoteInputEnabled && serverUrl && (
               <ThemedText style={styles.subtitle}>用手机访问 {serverUrl}，可远程输入</ThemedText>
             )}
+            {isTV && (
+              <ThemedText style={styles.subtitle}>
+                {editMode ? "上下键选择 · 确认键编辑 · 返回键退出" : "按确认键进入编辑"}
+              </ThemedText>
+            )}
           </View>
           <Animated.View style={inputAnimationStyle}>
             <TextInput
               ref={inputRef}
-              style={[styles.input, isInputFocused && styles.inputFocused, isSectionFocused && activeField === "m3u" && !isInputFocused && styles.inputTarget]}
+              style={inputStyleFor("m3u")}
               value={m3uUrl}
               onChangeText={handleUrlChange}
               placeholder="输入 M3U 直播源地址"
               placeholderTextColor="#888"
               autoCapitalize="none"
               autoCorrect={false}
-              onFocus={() => {
-                setIsInputFocused(true);
-                onInputFocus?.();
-                // 将光标移动到文本末尾
-                const end = m3uUrl.length;
-                setSelection({ start: end, end: end });
-                // 有时需要延迟一下，让系统先完成 focus 再设置 selection
-                //（在 Android 上更可靠）
-                setTimeout(() => {
-                  // 对于受控的 selection 已经生效，这里仅作保险
-                  inputRef.current?.setNativeProps({ selection: { start: end, end: end } });
-                }, 0);
-              }}
               selection={selection}
-              onSelectionChange={onSelectionChange} // 可选
-
-              onBlur={() => {
-                setIsInputFocused(false);
-                onInputBlur?.();
-              }}
-            // onPress={handlePress}
+              onSelectionChange={onSelectionChange}
+              {...makeInputProps("m3u")}
             />
           </Animated.View>
         </View>
@@ -154,7 +172,7 @@ export const LiveStreamSection = forwardRef<LiveStreamSectionRef, LiveStreamSect
           <Animated.View style={inputAnimationStyle}>
             <TextInput
               ref={epgInputRef}
-              style={[styles.input, isEpgInputFocused && styles.inputFocused, isSectionFocused && activeField === "epg" && !isEpgInputFocused && styles.inputTarget]}
+              style={inputStyleFor("epg")}
               value={epgUrl}
               onChangeText={(url) => {
                 setEpgUrl(url);
@@ -164,26 +182,19 @@ export const LiveStreamSection = forwardRef<LiveStreamSectionRef, LiveStreamSect
               placeholderTextColor="#888"
               autoCapitalize="none"
               autoCorrect={false}
-              onFocus={() => {
-                setIsEpgInputFocused(true);
-                onInputFocus?.();
-              }}
-              onBlur={() => {
-                setIsEpgInputFocused(false);
-                onInputBlur?.();
-              }}
+              {...makeInputProps("epg")}
             />
           </Animated.View>
         </View>
         <View style={styles.inputContainer}>
           <View style={styles.titleContainer}>
             <ThemedText style={styles.sectionTitle}>回看服务地址</ThemedText>
-            <ThemedText style={styles.subtitle}>选填，NAS 回看服务；填写后直播频道长按确认键可看回看</ThemedText>
+            <ThemedText style={styles.subtitle}>选填，NAS 回看服务；填写后直播频道按菜单键可看回看</ThemedText>
           </View>
           <Animated.View style={inputAnimationStyle}>
             <TextInput
               ref={replayInputRef}
-              style={[styles.input, isReplayInputFocused && styles.inputFocused, isSectionFocused && activeField === "replay" && !isReplayInputFocused && styles.inputTarget]}
+              style={inputStyleFor("replay")}
               value={replayServerUrl}
               onChangeText={(url) => {
                 setReplayServerUrl(url);
@@ -193,14 +204,7 @@ export const LiveStreamSection = forwardRef<LiveStreamSectionRef, LiveStreamSect
               placeholderTextColor="#888"
               autoCapitalize="none"
               autoCorrect={false}
-              onFocus={() => {
-                setIsReplayInputFocused(true);
-                onInputFocus?.();
-              }}
-              onBlur={() => {
-                setIsReplayInputFocused(false);
-                onInputBlur?.();
-              }}
+              {...makeInputProps("replay")}
             />
           </Animated.View>
         </View>
@@ -216,6 +220,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     marginBottom: 8,
+    flexWrap: "wrap",
   },
   sectionTitle: {
     fontSize: 16,
@@ -248,7 +253,7 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     elevation: 5,
   },
-  // TV 上下键切换时的目标输入框提示边框
+  // TV 编辑模式下的光标目标提示边框
   inputTarget: {
     borderColor: "rgba(255, 255, 255, 0.4)",
   },
