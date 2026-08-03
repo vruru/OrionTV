@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* eslint-env node */
 /**
  * 确保 AndroidManifest.xml 包含完整的 expo-updates 元数据。
  *
