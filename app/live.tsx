@@ -829,6 +829,18 @@ export default function LiveScreen() {
         retryKey={retryKey}
         onPlaybackError={setPlaybackFailed}
       />
+      {/* 全屏播放器本身没有可聚焦控件；保留一个透明 TV 焦点锚点，确保进入页面后
+          遥控器事件稳定落在直播页面。方向键仍统一由 handleTVEvent 处理。 */}
+      {deviceType === "tv" && !isChannelListVisible && !replayChannel && (
+        <Pressable
+          focusable
+          hasTVPreferredFocus
+          style={styles.playerFocusAnchor}
+          onPress={() => {
+            if (playbackFailedRef.current) setRetryKey((k) => k + 1);
+          }}
+        />
+      )}
       {/* 回看播放中：右上角常驻水印式标志（镂空透明，不挡画面与台标位） */}
       {replaySession && (
         <View style={styles.replayOverlay} pointerEvents="none">
@@ -1079,6 +1091,10 @@ const styles = StyleSheet.create({
     position: "absolute",
     width: 1,
     height: 1,
+    opacity: 0,
+  },
+  playerFocusAnchor: {
+    ...StyleSheet.absoluteFillObject,
     opacity: 0,
   },
   retryTouchOverlay: {

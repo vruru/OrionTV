@@ -22,6 +22,8 @@ export default function LivePlayer({ streamUrl, channelTitle, onPlaybackStatusUp
   const [isLoading, setIsLoading] = useState(false);
   const [isTimeout, setIsTimeout] = useState(false);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // 一旦当前流已经真正开始播放，后续短暂缓冲不再用全屏加载层盖住画面。
+  const hasPlaybackStartedRef = useRef(false);
   // 全局画面比例设置（设置页 / TV 上键快捷切换即时生效）
   const videoResizeMode = useSettingsStore((s) => s.videoResizeMode);
   useKeepAwake();
@@ -32,6 +34,7 @@ export default function LivePlayer({ streamUrl, channelTitle, onPlaybackStatusUp
     }
 
     if (streamUrl) {
+      hasPlaybackStartedRef.current = false;
       setIsLoading(true);
       setIsTimeout(false);
       timeoutRef.current = setTimeout(() => {
@@ -39,6 +42,7 @@ export default function LivePlayer({ streamUrl, channelTitle, onPlaybackStatusUp
         setIsLoading(false);
       }, PLAYBACK_TIMEOUT);
     } else {
+      hasPlaybackStartedRef.current = false;
       setIsLoading(false);
       setIsTimeout(false);
     }
@@ -59,13 +63,18 @@ export default function LivePlayer({ streamUrl, channelTitle, onPlaybackStatusUp
   const handlePlaybackStatusUpdate = (status: AVPlaybackStatus) => {
     if (status.isLoaded) {
       if (status.isPlaying) {
+        hasPlaybackStartedRef.current = true;
         if (timeoutRef.current) {
           clearTimeout(timeoutRef.current);
         }
         setIsLoading(false);
         setIsTimeout(false);
       } else if (status.isBuffering) {
-        setIsLoading(true);
+        setIsLoading(!hasPlaybackStartedRef.current);
+      } else {
+        // HLS 在首帧可显示到 isPlaying=true 之间可能先报告“已加载且未缓冲”。
+        // 此时隐藏转圈，但保留 15 秒超时，真正开始播放后再清掉计时器。
+        setIsLoading(false);
       }
     } else {
       if (status.error) {
@@ -114,7 +123,7 @@ export default function LivePlayer({ streamUrl, channelTitle, onPlaybackStatusUp
         }}
       />
       {isLoading && (
-        <View style={styles.loadingOverlay}>
+        <View style={styles.loadingOverlay} pointerEvents="none">
           <ActivityIndicator size="large" color="#fff" />
           <Text style={styles.messageText}>加载中...</Text>
         </View>

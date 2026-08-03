@@ -2,6 +2,7 @@ import {
   parseXmltvTime,
   normalizeChannelName,
   parseEpgXml,
+  parseEpgXmlAsync,
   getCurrentProgramme,
   findEpgChannelIdByName,
   buildEpgKeys,
@@ -114,6 +115,14 @@ describe("epg", () => {
       const data = parseEpgXml(SAMPLE_XML, new Set(["hunan"]), NOW);
       expect(data.programmesByChannel.has("cctv1")).toBe(false);
       expect(data.programmesByChannel.get("hunan")!.map((p) => p.title)).toEqual(["快乐大本营"]);
+    });
+
+    it("异步分片解析应与同步解析得到相同数据", async () => {
+      const syncData = parseEpgXml(SAMPLE_XML, undefined, NOW);
+      const asyncData = await parseEpgXmlAsync(SAMPLE_XML, undefined, NOW);
+      expect([...asyncData.channelDisplayNames]).toEqual([...syncData.channelDisplayNames]);
+      expect([...asyncData.channelIdsByNormalizedName]).toEqual([...syncData.channelIdsByNormalizedName]);
+      expect([...asyncData.programmesByChannel]).toEqual([...syncData.programmesByChannel]);
     });
   });
 

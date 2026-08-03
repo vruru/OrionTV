@@ -21,6 +21,8 @@ export interface EpgData {
   programmesByChannel: Map<string, EpgProgramme[]>;
   /** xmltv channel id → display-name（用于按名称兜底匹配） */
   channelDisplayNames: Map<string, string>;
+  /** 规范化频道名 → xmltv channel id，避免每个直播频道都全表扫描 */
+  channelIdsByNormalizedName: Map<string, string>;
   fetchedAt: number;
 }
 
@@ -47,61 +49,121 @@ export const normalizeChannelName = (name: string): string =>
 
 const MAX_EPG_BYTES = 40 * 1024 * 1024; // 超过 40MB 的 EPG 拒绝解析，避免卡死
 
+const CHANNEL_RE_SOURCE = '<channel\\s+id="([^"]+)"[^>]*>([\\s\\S]*?)<\\/channel>';
+const PROGRAMME_RE_SOURCE =
+  '<programme\\s+[^>]*start="([^"]+)"[^>]*stop="([^"]+)"[^>]*channel="([^"]+)"[^>]*>([\\s\\S]*?)<\\/programme>';
+
+type EpgAccumulator = Pick<
+  EpgData,
+  'programmesByChannel' | 'channelDisplayNames' | 'channelIdsByNormalizedName'
+>;
+
+const createAccumulator = (): EpgAccumulator => ({
+  programmesByChannel: new Map<string, EpgProgramme[]>(),
+  channelDisplayNames: new Map<string, string>(),
+  channelIdsByNormalizedName: new Map<string, string>(),
+});
+
+const addChannelMatch = (target: EpgAccumulator, match: RegExpExecArray) => {
+  const id = match[1];
+  const displayName = match[2].match(/<display-name[^>]*>([^<]*)<\/display-name>/)?.[1]?.trim();
+  if (!displayName) return;
+  target.channelDisplayNames.set(id, displayName);
+  const normalized = normalizeChannelName(displayName);
+  if (normalized && !target.channelIdsByNormalizedName.has(normalized)) {
+    target.channelIdsByNormalizedName.set(normalized, id);
+  }
+};
+
+const addProgrammeMatch = (
+  target: EpgAccumulator,
+  match: RegExpExecArray,
+  windowStart: number,
+  windowEnd: number,
+  wantedChannelIds?: Set<string>
+) => {
+  const channelId = match[3];
+  if (wantedChannelIds && wantedChannelIds.size > 0 && !wantedChannelIds.has(channelId)) return;
+
+  const start = parseXmltvTime(match[1]);
+  const stop = parseXmltvTime(match[2]);
+  if (!start || !stop || stop <= windowStart || start >= windowEnd) return;
+
+  const title = match[4].match(/<title[^>]*>([^<]*)<\/title>/)?.[1]?.trim();
+  if (!title) return;
+
+  const entry: EpgProgramme = { channel: channelId, start, stop, title };
+  const list = target.programmesByChannel.get(channelId);
+  if (list) list.push(entry);
+  else target.programmesByChannel.set(channelId, [entry]);
+};
+
+const finishEpgData = (target: EpgAccumulator, fetchedAt: number): EpgData => {
+  for (const list of target.programmesByChannel.values()) {
+    list.sort((a, b) => a.start - b.start);
+  }
+  return { ...target, fetchedAt };
+};
+
+/** 把执行权还给 RN 一帧，让播放器状态和遥控器事件可以继续被处理。 */
+const yieldToUi = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
 export const parseEpgXml = (
   xmlText: string,
   wantedChannelIds?: Set<string>,
   now: number = Date.now()
 ): EpgData => {
-  const programmesByChannel = new Map<string, EpgProgramme[]>();
-  const channelDisplayNames = new Map<string, string>();
+  const target = createAccumulator();
 
   // 1. 频道表：<channel id="x"> <display-name...>名称</display-name> </channel>
-  const channelRe = /<channel\s+id="([^"]+)"[^>]*>([\s\S]*?)<\/channel>/g;
+  const channelRe = new RegExp(CHANNEL_RE_SOURCE, 'g');
   let cm: RegExpExecArray | null;
   while ((cm = channelRe.exec(xmlText)) !== null) {
-    const id = cm[1];
-    const dn = cm[2].match(/<display-name[^>]*>([^<]*)<\/display-name>/);
-    if (dn && dn[1]) {
-      channelDisplayNames.set(id, dn[1].trim());
-    }
+    addChannelMatch(target, cm);
   }
 
   // 2. 节目单：<programme start="..." stop="..." channel="x"> <title...>标题</title> </programme>
   //    保留过去 54 小时（配合 NAS 回看 48h 窗口，多留 6h 余量）到未来 24 小时的节目
   const windowStart = now - 54 * 60 * 60 * 1000;
   const windowEnd = now + 24 * 60 * 60 * 1000;
-  const progRe =
-    /<programme\s+[^>]*start="([^"]+)"[^>]*stop="([^"]+)"[^>]*channel="([^"]+)"[^>]*>([\s\S]*?)<\/programme>/g;
+  const progRe = new RegExp(PROGRAMME_RE_SOURCE, 'g');
   let pm: RegExpExecArray | null;
   while ((pm = progRe.exec(xmlText)) !== null) {
-    const channelId = pm[3];
-    if (wantedChannelIds && wantedChannelIds.size > 0 && !wantedChannelIds.has(channelId)) {
-      continue;
-    }
-    const start = parseXmltvTime(pm[1]);
-    const stop = parseXmltvTime(pm[2]);
-    if (!start || !stop || stop <= windowStart || start >= windowEnd) {
-      continue;
-    }
-    const tm = pm[4].match(/<title[^>]*>([^<]*)<\/title>/);
-    const title = tm && tm[1] ? tm[1].trim() : '';
-    if (!title) continue;
-
-    const list = programmesByChannel.get(channelId);
-    const entry: EpgProgramme = { channel: channelId, start, stop, title };
-    if (list) {
-      list.push(entry);
-    } else {
-      programmesByChannel.set(channelId, [entry]);
-    }
+    addProgrammeMatch(target, pm, windowStart, windowEnd, wantedChannelIds);
   }
 
-  // 排序便于查找
-  for (const list of programmesByChannel.values()) {
-    list.sort((a, b) => a.start - b.start);
+  return finishEpgData(target, now);
+};
+
+/**
+ * TV 运行时使用的协作式解析器。XMLTV 正则扫描仍在 JS 侧完成，但会定期让出
+ * 事件循环，避免低性能电视在解析节目单时停止响应遥控器与播放器状态回调。
+ */
+export const parseEpgXmlAsync = async (
+  xmlText: string,
+  wantedChannelIds?: Set<string>,
+  now: number = Date.now()
+): Promise<EpgData> => {
+  const target = createAccumulator();
+  const channelRe = new RegExp(CHANNEL_RE_SOURCE, 'g');
+  let cm: RegExpExecArray | null;
+  let scanned = 0;
+  while ((cm = channelRe.exec(xmlText)) !== null) {
+    addChannelMatch(target, cm);
+    if (++scanned % 100 === 0) await yieldToUi();
   }
 
-  return { programmesByChannel, channelDisplayNames, fetchedAt: now };
+  const windowStart = now - 54 * 60 * 60 * 1000;
+  const windowEnd = now + 24 * 60 * 60 * 1000;
+  const progRe = new RegExp(PROGRAMME_RE_SOURCE, 'g');
+  let pm: RegExpExecArray | null;
+  scanned = 0;
+  while ((pm = progRe.exec(xmlText)) !== null) {
+    addProgrammeMatch(target, pm, windowStart, windowEnd, wantedChannelIds);
+    if (++scanned % 250 === 0) await yieldToUi();
+  }
+
+  return finishEpgData(target, now);
 };
 
 export const fetchEpg = async (epgUrl: string, wantedChannelIds?: Set<string>): Promise<EpgData | null> => {
@@ -118,7 +180,7 @@ export const fetchEpg = async (epgUrl: string, wantedChannelIds?: Set<string>): 
         logger.info(`EPG 文件过大（${(text.length / 1024 / 1024).toFixed(1)}MB），放弃解析`);
         return null;
       }
-      const data = parseEpgXml(text, wantedChannelIds);
+      const data = await parseEpgXmlAsync(text, wantedChannelIds);
       logger.info(
         `EPG 解析完成：${data.programmesByChannel.size} 个频道有节目单，共 ${data.channelDisplayNames.size} 个频道名`
       );
@@ -157,10 +219,7 @@ export const getCurrentProgramme = (
 export const findEpgChannelIdByName = (epg: EpgData, channelName: string): string | undefined => {
   const target = normalizeChannelName(channelName);
   if (!target) return undefined;
-  for (const [id, displayName] of epg.channelDisplayNames) {
-    if (normalizeChannelName(displayName) === target) return id;
-  }
-  return undefined;
+  return epg.channelIdsByNormalizedName.get(target);
 };
 
 /** 频道 → 用于 EPG 匹配的候选 key 列表（含名称兜底解析） */
