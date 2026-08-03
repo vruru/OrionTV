@@ -61,7 +61,8 @@ export default function LiveScreen() {
 
   const CHANNEL_ROW_HEIGHT = deviceType === "mobile" ? 48 : 42;
 
-  const selectedChannelUrl = channels.length > 0 ? getPlayableUrl(channels[currentChannelIndex].url) : null;
+  // 可选链保护：频道列表重载后旧索引可能暂时越界
+  const selectedChannelUrl = channels.length > 0 ? getPlayableUrl(channels[currentChannelIndex]?.url ?? null) : null;
 
   // Keep refs in sync with the latest render.
   const currentGroupList = groupedChannels[selectedGroup] || [];
@@ -376,25 +377,32 @@ export default function LiveScreen() {
                       const isCursor = index === listSelectedIndex;
                       const isPlaying = channels[currentChannelIndex]?.id === item.id;
                       return (
-                        <View
-                          style={[
-                            dynamicStyles.channelRow,
-                            { height: CHANNEL_ROW_HEIGHT },
-                            isCursor && styles.rowActive,
-                          ]}
+                        // TV 端行不可聚焦（焦点由陷阱视图 + handleTVEvent 自管），
+                        // 移动端/平板端通过 onPress 触摸选台。
+                        <Pressable
+                          focusable={deviceType !== "tv"}
+                          onPress={() => handleSelectChannel(item)}
                         >
-                          {isPlaying && <View style={styles.playingDot} />}
-                          <Text
-                            numberOfLines={1}
+                          <View
                             style={[
-                              dynamicStyles.channelRowText,
-                              isCursor && styles.rowActiveText,
-                              isPlaying && !isCursor && styles.playingText,
+                              dynamicStyles.channelRow,
+                              { height: CHANNEL_ROW_HEIGHT },
+                              isCursor && styles.rowActive,
                             ]}
                           >
-                            {item.name || "未知频道"}
-                          </Text>
-                        </View>
+                            {isPlaying && <View style={styles.playingDot} />}
+                            <Text
+                              numberOfLines={1}
+                              style={[
+                                dynamicStyles.channelRowText,
+                                isCursor && styles.rowActiveText,
+                                isPlaying && !isCursor && styles.playingText,
+                              ]}
+                            >
+                              {item.name || "未知频道"}
+                            </Text>
+                          </View>
+                        </Pressable>
                       );
                     }}
                   />
@@ -531,7 +539,7 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
       paddingHorizontal: spacing,
     },
     channelRowText: {
-      fontSize: isMobile ? 14 : 13,
+      fontSize: isMobile ? 14 : 12,
       color: "#ddd",
       flexShrink: 1,
     },
