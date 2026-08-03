@@ -24,9 +24,10 @@ export interface LiveStreamSectionRef {
 
 export const LiveStreamSection = forwardRef<LiveStreamSectionRef, LiveStreamSectionProps>(
   ({ onChanged, onFocus, onBlur, onPress, onInputFocus, onInputBlur }, ref) => {
-    const { m3uUrl, setM3uUrl, remoteInputEnabled } = useSettingsStore();
+    const { m3uUrl, setM3uUrl, epgUrl, setEpgUrl, remoteInputEnabled } = useSettingsStore();
     const { serverUrl } = useRemoteControlStore();
     const [isInputFocused, setIsInputFocused] = useState(false);
+    const [isEpgInputFocused, setIsEpgInputFocused] = useState(false);
     const [isSectionFocused, setIsSectionFocused] = useState(false);
     const inputRef = useRef<TextInput>(null);
     const inputAnimationStyle = useButtonAnimation(isSectionFocused, 1.01);
@@ -124,6 +125,34 @@ export const LiveStreamSection = forwardRef<LiveStreamSectionRef, LiveStreamSect
                 onInputBlur?.();
               }}
             // onPress={handlePress}
+            />
+          </Animated.View>
+        </View>
+        <View style={styles.inputContainer}>
+          <View style={styles.titleContainer}>
+            <ThemedText style={styles.sectionTitle}>EPG 节目单地址</ThemedText>
+            <ThemedText style={styles.subtitle}>选填，xmltv 格式；填写后直播显示当前节目</ThemedText>
+          </View>
+          <Animated.View style={inputAnimationStyle}>
+            <TextInput
+              style={[styles.input, isEpgInputFocused && styles.inputFocused]}
+              value={epgUrl}
+              onChangeText={(url) => {
+                setEpgUrl(url);
+                onChanged();
+              }}
+              placeholder="输入 EPG 节目单地址（如 http://epg.51zmt.top:8000/e.xml）"
+              placeholderTextColor="#888"
+              autoCapitalize="none"
+              autoCorrect={false}
+              onFocus={() => {
+                setIsEpgInputFocused(true);
+                onInputFocus?.();
+              }}
+              onBlur={() => {
+                setIsEpgInputFocused(false);
+                onInputBlur?.();
+              }}
             />
           </Animated.View>
         </View>
