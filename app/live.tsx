@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { View, FlatList, StyleSheet, ActivityIndicator, Modal, useTVEventHandler, HWEvent, Text, TextInput, Pressable } from "react-native";
+import { View, FlatList, StyleSheet, ActivityIndicator, Modal, useTVEventHandler, HWEvent, Text, TextInput, Pressable, BackHandler } from "react-native";
 import { FlashList } from "@shopify/flash-list";
 import Toast from "react-native-toast-message";
 import { QrCode } from "lucide-react-native";
@@ -84,13 +84,13 @@ export default function LiveScreen() {
   const [recordedChannels, setRecordedChannels] = useState<Set<string>>(new Set());
   const [replayChannel, setReplayChannel] = useState<Channel | null>(null);
   const [replayCursor, setReplayCursor] = useState(0);
-  const [replaySession, setReplaySession] = useState<{ url: string; title: string; channelName: string } | null>(null);
+  const [replaySession, setReplaySession] = useState<{ url: string; title: string; channelName: string; channel: Channel } | null>(null);
   const replayCursorRef = useRef(0);
   const replayListRef = useRef<FlashList<EpgProgramme>>(null);
   // handleTVEvent 的 useCallback 依赖不含这些 state，闭包通过 ref 读最新值
   const replayChannelRef = useRef<Channel | null>(null);
   const replayProgrammesRef = useRef<EpgProgramme[]>([]);
-  const replaySessionRef = useRef<{ url: string; title: string; channelName: string } | null>(null);
+  const replaySessionRef = useRef<{ url: string; title: string; channelName: string; channel: Channel } | null>(null);
   const epgDataRef = useRef<EpgData | null>(null);
   const recordedChannelsRef = useRef<Set<string>>(new Set());
   // 频道搜索：有关键词时节目表切换为跨分组搜索结果模式
@@ -186,6 +186,16 @@ export default function LiveScreen() {
       cancelled = true;
     };
   }, [replayServerUrl]);
+
+  // 有 EPG 节目单的频道名集合：频道行右侧「节目单」标的数据源
+  const epgChannelNames = useMemo(() => {
+    const set = new Set<string>();
+    if (!epgData) return set;
+    for (const ch of channels) {
+      if (findEpgProgrammes(epgData, ch).length > 0) set.add(ch.name);
+    }
+    return set;
+  }, [epgData, channels]);
 
   // 收藏变化后保持选中状态合法：收藏分组可能消失、列表可能变短
   useEffect(() => {
@@ -364,7 +374,7 @@ export default function LiveScreen() {
       return;
     }
     const url = buildReplayUrl(serverUrl, channel.name, prog.start, prog.stop);
-    setReplaySession({ url, title: prog.title, channelName: channel.name });
+    setReplaySession({ url, title: prog.title, channelName: channel.name, channel });
     setReplayChannel(null);
   };
 
@@ -427,6 +437,16 @@ export default function LiveScreen() {
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isChannelListVisible]);
+
+  // 播放回看中按返回键：退出回看回到直播（拦截系统返回，不退出 App）
+  useEffect(() => {
+    if (!replaySession) return;
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      setReplaySession(null);
+      return true;
+    });
+    return () => sub.remove();
+  }, [replaySession]);
 
   // 回看节目单打开时滚动到光标位置（当前节目）
   useEffect(() => {
@@ -582,7 +602,11 @@ export default function LiveScreen() {
           exitReplay();
           changeChannel("next");
         } else if (type === "up") cycleResizeModeWithToast();
-        else if ((type === "menu" || type === "contextMenu") && replaySessionRef.current) exitReplay();
+        else if (type === "menu" || type === "contextMenu") {
+          // 回看播放中按菜单键：直接打开该频道的节目单（方便接着选下一集）
+          const sess = replaySessionRef.current;
+          if (sess) openReplayList(sess.channel);
+        }
         else if ((type === "select" || type === "playPause") && playbackFailedRef.current) {
           setRetryKey((k) => k + 1);
         }
@@ -666,6 +690,15 @@ export default function LiveScreen() {
         retryKey={retryKey}
         onPlaybackError={setPlaybackFailed}
       />
+      {/* 回看播放中：左上角常驻标志，避免误以为在看直播 */}
+      {replaySession && (
+        <View style={styles.replayOverlay} pointerEvents="none">
+          <Text style={styles.replayOverlayBadge}>回看</Text>
+          <Text style={styles.replayOverlayText} numberOfLines={1}>
+            {`${replaySession.channelName} · ${replaySession.title}`}
+          </Text>
+        </View>
+      )}
       {/* 移动端/平板：加载失败时点按重试（TV 端走确认键） */}
       {playbackFailed && deviceType !== "tv" && (
         <Pressable style={styles.retryTouchOverlay} onPress={() => setRetryKey((k) => k + 1)} />
@@ -751,7 +784,7 @@ export default function LiveScreen() {
                     ref={channelListRef}
                     data={activeList}
                     keyExtractor={(item, index) => `${item.id}-${index}`}
-                    extraData={`${listSelectedIndex}-${currentChannelIndex}|${favoriteIds.join(",")}|${trimmedKeyword}`}
+                    extraData={`${listSelectedIndex}-${currentChannelIndex}|${favoriteIds.join(",")}|${trimmedKeyword}|${[...recordedChannels].join(",")}|${epgChannelNames.size}:${epgData?.fetchedAt ?? 0}`}
                     estimatedItemSize={CHANNEL_ROW_HEIGHT}
                     renderItem={({ item, index }) => {
                       const isCursor = index === listSelectedIndex;
@@ -774,6 +807,12 @@ export default function LiveScreen() {
                               isCursor && styles.rowActive,
                             ]}
                           >
+                            {/* 左边固定槽位：能回看的频道才有「回看」标，无标时占位对齐 */}
+                            <View style={styles.badgeSlotLeft}>
+                              {item.catchupSource || recordedChannels.has(item.name) ? (
+                                <Text style={styles.catchupBadge}>回看</Text>
+                              ) : null}
+                            </View>
                             {isPlaying && <View style={styles.playingDot} />}
                             {isFav && <Text style={styles.favStar}>★</Text>}
                             <Text
@@ -786,8 +825,9 @@ export default function LiveScreen() {
                             >
                               {item.name || "未知频道"}
                             </Text>
-                            {item.catchupSource || recordedChannels.has(item.name) ? (
-                              <Text style={styles.catchupBadge}>回看</Text>
+                            {/* 右边固定位置：有 EPG 节目单的频道显示「节目单」标 */}
+                            {epgChannelNames.has(item.name) ? (
+                              <Text style={styles.epgBadge}>节目单</Text>
                             ) : null}
                           </View>
                         </Pressable>
@@ -817,7 +857,7 @@ export default function LiveScreen() {
             <Text style={styles.replayTitle} numberOfLines={1}>
               {replayChannel ? `${replayChannel.name} · 节目单` : ""}
             </Text>
-            <Text style={styles.replayHint}>确认键回看已播节目 · 菜单键返回</Text>
+            <Text style={styles.replayHint}>确认键回看已播节目 · 菜单键/返回键关闭</Text>
             <FlashList
               ref={replayListRef}
               data={replayProgrammes}
@@ -961,6 +1001,51 @@ const styles = StyleSheet.create({
   },
   replayFutureText: {
     color: "#666",
+  },
+  badgeSlotLeft: {
+    width: 34,
+    marginRight: 2,
+    alignItems: "flex-start",
+  },
+  epgBadge: {
+    color: "#a8e6b8",
+    fontSize: 10,
+    borderWidth: 1,
+    borderColor: "rgba(168, 230, 184, 0.6)",
+    borderRadius: 4,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    marginLeft: "auto",
+    overflow: "hidden",
+  },
+  replayOverlay: {
+    position: "absolute",
+    top: 24,
+    left: 24,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(0, 0, 0, 0.55)",
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    maxWidth: "60%",
+  },
+  replayOverlayBadge: {
+    color: "#9ec9ff",
+    fontSize: 12,
+    fontWeight: "bold",
+    borderWidth: 1,
+    borderColor: "rgba(158, 201, 255, 0.6)",
+    borderRadius: 4,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    marginRight: 8,
+    overflow: "hidden",
+  },
+  replayOverlayText: {
+    color: "#eee",
+    fontSize: 13,
+    flexShrink: 1,
   },
 });
 
