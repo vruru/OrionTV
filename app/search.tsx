@@ -40,8 +40,8 @@ export default function SearchScreen() {
 
   useEffect(() => {
     if (lastMessage && targetPage === 'search') {
-      logger.debug("Received remote input:", lastMessage);
-      const realMessage = lastMessage.split("_")[0];
+      logger.debug("Received remote input:", lastMessage.text);
+      const realMessage = lastMessage.text;
       setKeyword(realMessage);
       handleSearch(realMessage);
       clearMessage(); // Clear the message after processing

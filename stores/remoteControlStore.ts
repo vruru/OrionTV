@@ -4,6 +4,18 @@ import Logger from '@/utils/Logger';
 
 const logger = Logger.withTag('RemoteControlStore');
 
+// 远程输入消息。用对象而不是「文本_时间戳」拼接字符串：旧实现里手动
+// setMessage 会拼 `_${Date.now()}` 后缀而真实的 onMessage 路径不拼，导致
+// ① 连续两条相同文本时状态不变、useEffect 不重新触发（第二条输入被吞）
+// ② 消费方用 split("_")[0] 剥离后缀，会把本身含下划线的输入截断。
+export interface RemoteMessage {
+  text: string;
+  id: number; // 单调递增，保证相同文本也始终是一条新消息
+}
+
+let messageSeq = 0;
+const nextMessageId = () => ++messageSeq;
+
 interface RemoteControlState {
   isServerRunning: boolean;
   serverUrl: string | null;
@@ -13,7 +25,7 @@ interface RemoteControlState {
   isModalVisible: boolean;
   showModal: (targetPage?: string) => void;
   hideModal: () => void;
-  lastMessage: string | null;
+  lastMessage: RemoteMessage | null;
   targetPage: string | null;
   setMessage: (message: string, targetPage?: string) => void;
   clearMessage: () => void;
@@ -36,7 +48,7 @@ export const useRemoteControlStore = create<RemoteControlState>((set, get) => ({
         logger.debug('Received message:', message);
         const currentState = get();
         // Use the current targetPage from the store
-        set({ lastMessage: message, targetPage: currentState.targetPage });
+        set({ lastMessage: { text: message, id: nextMessageId() }, targetPage: currentState.targetPage });
       },
       onHandshake: () => {
         logger.debug('Handshake successful');
@@ -65,7 +77,7 @@ export const useRemoteControlStore = create<RemoteControlState>((set, get) => ({
   hideModal: () => set({ isModalVisible: false, targetPage: null }),
 
   setMessage: (message: string, targetPage?: string) => {
-    set({ lastMessage: `${message}_${Date.now()}`, targetPage });
+    set({ lastMessage: { text: message, id: nextMessageId() }, targetPage });
   },
 
   clearMessage: () => {

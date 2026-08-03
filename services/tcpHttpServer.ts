@@ -125,36 +125,52 @@ class TCPHttpServer {
           socket.on('data', async (data: string | Buffer) => {
             requestData += data.toString();
             
-            // Check if we have a complete HTTP request
-            if (requestData.includes('\r\n\r\n')) {
-              try {
-                const request = this.parseHttpRequest(requestData);
-                if (request && this.requestHandler) {
-                  const response = await this.requestHandler(request);
-                  const httpResponse = this.formatHttpResponse(response);
-                  socket.write(httpResponse);
-                } else {
-                  // Send 400 Bad Request for malformed requests
-                  const errorResponse = this.formatHttpResponse({
-                    statusCode: 400,
-                    headers: { 'Content-Type': 'text/plain' },
-                    body: 'Bad Request'
-                  });
-                  socket.write(errorResponse);
-                }
-              } catch (error) {
-                logger.info('[TCPHttpServer] Error handling request:', error);
+            // 必须等整个请求收完再处理：头部以 \r\n\r\n 结束，且 body 要达到
+            // Content-Length 指定的字节数。之前只要看到头部结束符就解析，
+            // 如果 POST body 在后续的 TCP 分片里才到达，就会被截断解析成无效 JSON。
+            const headerEnd = requestData.indexOf('\r\n\r\n');
+            if (headerEnd === -1) {
+              return; // 头部还没收完
+            }
+            const headerText = requestData.substring(0, headerEnd);
+            const contentLengthMatch = /content-length:\s*(\d+)/i.exec(headerText);
+            const contentLength = contentLengthMatch ? parseInt(contentLengthMatch[1], 10) : 0;
+            if (contentLength > 0) {
+              const body = requestData.substring(headerEnd + 4);
+              // Content-Length 按字节计，JS 字符串按字符计（UTF-8 中文 3 字节/字符）
+              const bodyBytes = new TextEncoder().encode(body).length;
+              if (bodyBytes < contentLength) {
+                return; // body 还没收完
+              }
+            }
+
+            try {
+              const request = this.parseHttpRequest(requestData);
+              if (request && this.requestHandler) {
+                const response = await this.requestHandler(request);
+                const httpResponse = this.formatHttpResponse(response);
+                socket.write(httpResponse);
+              } else {
+                // Send 400 Bad Request for malformed requests
                 const errorResponse = this.formatHttpResponse({
-                  statusCode: 500,
+                  statusCode: 400,
                   headers: { 'Content-Type': 'text/plain' },
-                  body: 'Internal Server Error'
+                  body: 'Bad Request'
                 });
                 socket.write(errorResponse);
               }
-              
-              socket.end();
-              requestData = '';
+            } catch (error) {
+              logger.info('[TCPHttpServer] Error handling request:', error);
+              const errorResponse = this.formatHttpResponse({
+                statusCode: 500,
+                headers: { 'Content-Type': 'text/plain' },
+                body: 'Internal Server Error'
+              });
+              socket.write(errorResponse);
             }
+            
+            socket.end();
+            requestData = '';
           });
 
           socket.on('error', (error: Error) => {
