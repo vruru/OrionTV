@@ -515,7 +515,7 @@ export default function LiveScreen() {
               <TextInput
                 ref={searchInputRef}
                 style={dynamicStyles.searchInput}
-                placeholder={deviceType === "tv" ? "搜索频道（首行再按上键输入）" : "搜索频道（拼音 / 首字母）"}
+                placeholder={deviceType === "tv" ? "搜索频道（拼音/首字母 · 首行按上键输入）" : "搜索频道（拼音 / 首字母）"}
                 placeholderTextColor="#888"
                 value={searchKeyword}
                 onChangeText={setSearchKeyword}
