@@ -66,7 +66,7 @@ export default function SettingsScreen() {
 
   useEffect(() => {
     if (lastMessage && !targetPage) {
-      const realMessage = lastMessage.split("_")[0];
+      const realMessage = lastMessage.text;
       handleRemoteInput(realMessage);
       clearMessage(); // Clear the message after processing
       markAsChanged();
@@ -105,65 +105,6 @@ export default function SettingsScreen() {
     setHasChanges(true);
   };
 
-  // const sections = [
-  //   // 远程输入配置 - 仅在非手机端显示
-  //   deviceType !== "mobile" && {
-  //     component: (
-  //       <RemoteInputSection
-  //         onChanged={markAsChanged}
-  //         onFocus={() => {
-  //           setCurrentFocusIndex(0);
-  //           setCurrentSection("remote");
-  //         }}
-  //       />
-  //     ),
-  //     key: "remote",
-  //   },
-  //   {
-  //     component: (
-  //       <APIConfigSection
-  //         ref={apiSectionRef}
-  //         onChanged={markAsChanged}
-  //         hideDescription={deviceType === "mobile"}
-  //         onFocus={() => {
-  //           setCurrentFocusIndex(1);
-  //           setCurrentSection("api");
-  //         }}
-  //       />
-  //     ),
-  //     key: "api",
-  //   },
-  //   // 直播源配置 - 仅在非手机端显示
-  //   deviceType !== "mobile" && {
-  //     component: (
-  //       <LiveStreamSection
-  //         ref={liveStreamSectionRef}
-  //         onChanged={markAsChanged}
-  //         onFocus={() => {
-  //           setCurrentFocusIndex(2);
-  //           setCurrentSection("livestream");
-  //         }}
-  //       />
-  //     ),
-  //     key: "livestream",
-  //   },
-  //   // {
-  //   //   component: (
-  //   //     <VideoSourceSection
-  //   //       onChanged={markAsChanged}
-  //   //       onFocus={() => {
-  //   //         setCurrentFocusIndex(3);
-  //   //         setCurrentSection("videoSource");
-  //   //       }}
-  //   //     />
-  //   //   ),
-  //   //   key: "videoSource",
-  //   // },
-  //   Platform.OS === "android" && {
-  //     component: <UpdateSection />,
-  //     key: "update",
-  //   },
-  // ].filter(Boolean);
   const rawSections = [
     deviceType !== "mobile" && {
       component: (
@@ -270,7 +211,6 @@ export default function SettingsScreen() {
   const dynamicStyles = createResponsiveStyles(deviceType, spacing, insets);
 
   const renderSettingsContent = () => (
-    // <KeyboardAvoidingView style={{ flex: 1, backgroundColor }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
     <KeyboardAwareScrollView
       enableOnAndroid={true}
       extraScrollHeight={20}
@@ -287,20 +227,6 @@ export default function SettingsScreen() {
           </View>
         )}
 
-        {/* <View style={dynamicStyles.scrollView}>
-          <FlatList
-            data={sections}
-            renderItem={({ item }) => {
-              if (item) {
-                return item.component;
-              }
-              return null;
-            }}
-            keyExtractor={(item) => (item ? item.key : "default")}
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={dynamicStyles.listContent}
-          />
-        </View> */}
         <View style={dynamicStyles.scrollView}>
           {sections.map(item => (
             // 必须把 key 放在最外层的 View 上
@@ -321,7 +247,6 @@ export default function SettingsScreen() {
         </View>
       </ThemedView>
     </KeyboardAwareScrollView>
-    // </KeyboardAvoidingView>
   );
 
   // 根据设备类型决定是否包装在响应式导航中
