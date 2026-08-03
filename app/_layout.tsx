@@ -17,8 +17,12 @@ import { UpdateModal } from "@/components/UpdateModal";
 import { UPDATE_CONFIG } from "@/constants/UpdateConfig";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import Logger from '@/utils/Logger';
+import { initMonitoring } from "@/utils/monitoring";
 
 const logger = Logger.withTag('RootLayout');
+
+// 初始化错误监控（未配置 DSN 时为空操作）
+initMonitoring();
 
 // Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync();
