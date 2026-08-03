@@ -27,6 +27,7 @@ interface SpeedTestState {
   progressTotal: number;
   loadResults: () => Promise<void>;
   runTest: () => Promise<void>;
+  cancelTest: () => void;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -65,6 +66,7 @@ export const useSpeedTestStore = create<SpeedTestState>((set, get) => ({
       }
 
       for (const q of SAMPLE_QUERIES) {
+        if (!get().isTesting) return; // cancelled while sampling
         try {
           const { results } = await api.searchVideos(q);
           for (const r of results) {
@@ -90,7 +92,7 @@ export const useSpeedTestStore = create<SpeedTestState>((set, get) => ({
       const newResults: Record<string, SpeedResult> = { ...get().results };
       let done = 0;
       for (const [siteKey, sample] of entries) {
-        if (!get().isTesting) break; // safety
+        if (!get().isTesting) break; // cancelled by user
         set({ currentName: sample.name, currentMbps: null });
         const mbps = await measureSpeedMbps(sample.url);
         newResults[siteKey] = { name: sample.name, mbps, testedAt: Date.now() };
@@ -99,6 +101,7 @@ export const useSpeedTestStore = create<SpeedTestState>((set, get) => ({
         await sleep(400); // let the just-measured speed be readable
       }
 
+      // 被取消时也保留已完成的结果
       await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(newResults));
       set({ done: true, currentName: null, currentMbps: null });
       await sleep(1500);
@@ -106,6 +109,14 @@ export const useSpeedTestStore = create<SpeedTestState>((set, get) => ({
       logger.error("runTest failed", e);
     } finally {
       set({ isTesting: false, done: false });
+    }
+  },
+
+  cancelTest: () => {
+    // 中断遍历循环（runTest 每轮迭代前检查 isTesting）；正在进行中的单个
+    // 测速会自然结束，已完成的测量结果仍会被保存。
+    if (get().isTesting) {
+      set({ isTesting: false });
     }
   },
 }));
