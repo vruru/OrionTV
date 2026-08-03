@@ -25,6 +25,7 @@
     "preview": {
       "extends": "production",
       "distribution": "internal",
+      "channel": "preview",
       "ios": {
         "simulator": true
       },
@@ -39,7 +40,9 @@
         "EXPO_TV": "1"
       }
     },
-    "production": {},
+    "production": {
+      "channel": "production"
+    },
     "production_tv": {
       "extends": "production", 
       "env": {

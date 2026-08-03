@@ -37,6 +37,7 @@
     },
     "name": "OrionTV",
     "slug": "OrionTV",
+    "version": "1.3.34",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "userInterfaceStyle": "dark",
@@ -86,6 +87,15 @@
       }
     },
     "scheme": "oriontv",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "enabled": true,
+      "url": "https://u.expo.dev/b4eddfdb-08cb-4ffc-828d-a27f493e10f7",
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0
+    },
     "extra": {
       "router": {
         "origin": false
