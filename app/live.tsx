@@ -7,13 +7,12 @@ import { ThemedView } from "@/components/ThemedView";
 import { Colors } from "@/constants/Colors";
 import { useSettingsStore } from "@/stores/settingsStore";
 import Logger from "@/utils/Logger";
-
-const logger = Logger.withTag("LiveScreen");
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
 import ResponsiveNavigation from "@/components/navigation/ResponsiveNavigation";
 import ResponsiveHeader from "@/components/navigation/ResponsiveHeader";
-import { DeviceUtils } from "@/utils/DeviceUtils";
+
+const logger = Logger.withTag("LiveScreen");
 
 // Convert backend live channels into the local Channel shape.
 const mapChannels = (
@@ -286,10 +285,18 @@ export default function LiveScreen() {
           changeGroup(1);
           break;
         case "longUp":
-          action === 0 ? startFast(-1) : stopFast();
+          if (action === 0) {
+            startFast(-1);
+          } else {
+            stopFast();
+          }
           break;
         case "longDown":
-          action === 0 ? startFast(1) : stopFast();
+          if (action === 0) {
+            startFast(1);
+          } else {
+            stopFast();
+          }
           break;
       }
     },
@@ -484,7 +491,6 @@ const styles = StyleSheet.create({
 const createResponsiveStyles = (deviceType: string, spacing: number) => {
   const isMobile = deviceType === 'mobile';
   const isTablet = deviceType === 'tablet';
-  const minTouchTarget = DeviceUtils.getMinTouchTargetSize();
 
   return StyleSheet.create({
     container: {

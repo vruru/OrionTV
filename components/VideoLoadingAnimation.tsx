@@ -137,6 +137,8 @@ const VideoLoadingAnimation: React.FC<VideoLoadingAnimationProps> = ({ showProgr
       textFadeAnimation,
       ...shapeAnimations,
     ]).start();
+    // Animated.Value 实例由 useRef 创建、引用稳定，无需列入依赖
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const animatedStyles = {

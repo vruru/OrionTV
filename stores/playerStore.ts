@@ -10,9 +10,6 @@ import Logger from '@/utils/Logger';
 
 const logger = Logger.withTag('PlayerStore');
 
-// Coarse jump step for the timeline row of the preview UI (1 minute).
-const PREVIEW_TIMELINE_STEP_MS = 60 * 1000;
-
 interface Episode {
   url: string;
   title: string;
