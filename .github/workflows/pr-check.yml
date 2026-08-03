@@ -1,0 +1,31 @@
+name: PR Check
+
+on:
+  pull_request:
+    branches: [master]
+
+jobs:
+  check:
+    name: Type Check / Lint / Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: "yarn"
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile --ignore-scripts
+
+      - name: TypeScript
+        run: npx tsc --noEmit
+
+      - name: ESLint
+        run: npx eslint .
+
+      - name: Jest
+        run: CI=true npx jest --ci
