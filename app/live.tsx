@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { View, FlatList, StyleSheet, ActivityIndicator, Modal, useTVEventHandler, HWEvent, Text, Pressable } from "react-native";
 import { FlashList } from "@shopify/flash-list";
+import Toast from "react-native-toast-message";
 import LivePlayer from "@/components/LivePlayer";
 import { fetchAndParseM3u, getPlayableUrl, Channel } from "@/services/m3u";
 import { api } from "@/services/api";
 import { ThemedView } from "@/components/ThemedView";
 import { Colors } from "@/constants/Colors";
 import { useSettingsStore } from "@/stores/settingsStore";
+import useLiveFavoritesStore from "@/stores/liveFavoritesStore";
+import { EpgData, fetchEpg, getCurrentProgramme, buildEpgKeys, formatProgrammeTime } from "@/services/epg";
 import Logger from "@/utils/Logger";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
@@ -14,6 +17,9 @@ import ResponsiveNavigation from "@/components/navigation/ResponsiveNavigation";
 import ResponsiveHeader from "@/components/navigation/ResponsiveHeader";
 
 const logger = Logger.withTag("LiveScreen");
+
+// 收藏分组的固定名称：有收藏时排在分组列表第一位
+const FAVORITES_GROUP = "我的收藏";
 
 // Convert backend live channels into the local Channel shape.
 const mapChannels = (
@@ -31,7 +37,8 @@ const mapChannels = (
     }));
 
 export default function LiveScreen() {
-  const { m3uUrl, apiBaseUrl } = useSettingsStore();
+  const { m3uUrl, apiBaseUrl, epgUrl } = useSettingsStore();
+  const { favoriteIds, load: loadFavorites, toggle: toggleFavorite } = useLiveFavoritesStore();
   
   // 响应式布局配置
   const responsiveConfig = useResponsiveLayout();
@@ -47,6 +54,8 @@ export default function LiveScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [isChannelListVisible, setIsChannelListVisible] = useState(false);
   const [channelTitle, setChannelTitle] = useState<string | null>(null);
+  // EPG 节目单数据（设置了 epgUrl 才有）
+  const [epgData, setEpgData] = useState<EpgData | null>(null);
   // Self-managed cursor within the current group's channel list (like TiviMate
   // etc.): we don't rely on the OS focus engine to move through the list.
   const [listSelectedIndex, setListSelectedIndex] = useState(0);
@@ -65,10 +74,51 @@ export default function LiveScreen() {
   const selectedChannelUrl = channels.length > 0 ? getPlayableUrl(channels[currentChannelIndex]?.url ?? null) : null;
 
   // Keep refs in sync with the latest render.
-  const currentGroupList = groupedChannels[selectedGroup] || [];
+  const favoriteChannels = channels.filter((c) => favoriteIds.includes(c.id));
+  const displayGroups = favoriteChannels.length > 0 ? [FAVORITES_GROUP, ...channelGroups] : channelGroups;
+  const currentGroupList =
+    selectedGroup === FAVORITES_GROUP ? favoriteChannels : groupedChannels[selectedGroup] || [];
   groupListRef.current = currentGroupList;
   selectedGroupRef.current = selectedGroup;
-  channelGroupsRef.current = channelGroups;
+  channelGroupsRef.current = displayGroups;
+
+  // 加载频道收藏（本地持久化）
+  useEffect(() => {
+    loadFavorites();
+  }, [loadFavorites]);
+
+  // 配置了 EPG 地址才拉取节目单；留空即不启用（顺带探测回看能力）
+  useEffect(() => {
+    if (!epgUrl || channels.length === 0) {
+      setEpgData(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const data = await fetchEpg(epgUrl);
+      if (!cancelled) {
+        setEpgData(data);
+        const supportCount = channels.filter((c) => !!c.catchupSource).length;
+        logger.info(`回看能力探测：${supportCount}/${channels.length} 个频道声明了 catchup-source`);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [epgUrl, channels]);
+
+  // 收藏变化后保持选中状态合法：收藏分组可能消失、列表可能变短
+  useEffect(() => {
+    if (selectedGroup === FAVORITES_GROUP && favoriteChannels.length === 0) {
+      setSelectedGroup(channelGroups[0] || "");
+    }
+    const list = selectedGroup === FAVORITES_GROUP ? favoriteChannels : groupedChannels[selectedGroup] || [];
+    if (cursorRef.current > list.length - 1) {
+      const next = Math.max(0, list.length - 1);
+      cursorRef.current = next;
+      setListSelectedIndex(next);
+    }
+  }, [favoriteChannels, selectedGroup, channelGroups, groupedChannels]);
 
   useEffect(() => {
     const loadChannels = async () => {
@@ -130,18 +180,36 @@ export default function LiveScreen() {
         setCurrentChannelIndex(0);
 
         if (parsedChannels.length > 0) {
-          showChannelTitle(parsedChannels[0].name);
+          showChannelTitle(buildChannelDisplayTitle(parsedChannels[0]));
         }
         setIsLoading(false);
       }
     };
     loadChannels();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [m3uUrl, apiBaseUrl]);
 
   const showChannelTitle = (title: string) => {
     setChannelTitle(title);
     if (titleTimer.current) clearTimeout(titleTimer.current);
     titleTimer.current = setTimeout(() => setChannelTitle(null), 3000);
+  };
+
+  // 频道标题附带 EPG 当前节目（有 EPG 数据时）
+  const buildChannelDisplayTitle = (channel: Channel): string => {
+    if (!epgData) return channel.name;
+    const prog = getCurrentProgramme(epgData, buildEpgKeys(epgData, channel));
+    return prog ? `${channel.name} · ${prog.title}（${formatProgrammeTime(prog)}）` : channel.name;
+  };
+
+  // 收藏/取消收藏并给出反馈
+  const toggleFavoriteAndToast = async (channel: Channel) => {
+    const isFav = await toggleFavorite(channel.id);
+    Toast.show({
+      type: "success",
+      text1: isFav ? "已加入收藏" : "已取消收藏",
+      text2: channel.name,
+    });
   };
 
   const scrollToRow = (index: number, center = true) => {
@@ -186,7 +254,7 @@ export default function LiveScreen() {
     const globalIndex = channels.findIndex((c) => c.id === channel.id);
     if (globalIndex !== -1) {
       setCurrentChannelIndex(globalIndex);
-      showChannelTitle(channel.name);
+      showChannelTitle(buildChannelDisplayTitle(channel));
       setIsChannelListVisible(false);
     }
   };
@@ -247,9 +315,10 @@ export default function LiveScreen() {
           ? (currentChannelIndex + 1) % channels.length
           : (currentChannelIndex - 1 + channels.length) % channels.length;
       setCurrentChannelIndex(newIndex);
-      showChannelTitle(channels[newIndex].name);
+      showChannelTitle(buildChannelDisplayTitle(channels[newIndex]));
     },
-    [channels, currentChannelIndex]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [channels, currentChannelIndex, epgData]
   );
 
   const handleTVEvent = useCallback(
@@ -273,6 +342,13 @@ export default function LiveScreen() {
         case "longSelect":
           confirmSelect();
           break;
+        case "menu":
+        case "contextMenu": {
+          // TV 端：菜单键收藏/取消收藏光标所在频道
+          const ch = groupListRef.current[cursorRef.current];
+          if (ch) void toggleFavoriteAndToast(ch);
+          break;
+        }
         case "up":
           moveCursor(-1);
           break;
@@ -342,7 +418,11 @@ export default function LiveScreen() {
             {/* 焦点陷阱：唯一可聚焦元素，兜住焦点避免系统焦点乱跳。
                 按键处理（含确认键）统一在 handleTVEvent 里完成。 */}
             <Pressable focusable hasTVPreferredFocus style={styles.focusTrap} />
-            <Text style={dynamicStyles.modalTitle}>选择频道（左右切换分类 · 上下选频道 · 确认播放）</Text>
+            <Text style={dynamicStyles.modalTitle}>
+              {deviceType === "tv"
+                ? "选择频道（左右切换分类 · 上下选频道 · 确认播放 · 菜单键收藏）"
+                : "选择频道（点按播放 · 长按收藏）"}
+            </Text>
             <View style={dynamicStyles.listContainer}>
               <View style={dynamicStyles.groupColumn}>
                 <FlatList
@@ -372,17 +452,21 @@ export default function LiveScreen() {
                     ref={channelListRef}
                     data={currentGroupList}
                     keyExtractor={(item, index) => `${item.id}-${index}`}
-                    extraData={`${listSelectedIndex}-${currentChannelIndex}`}
+                    extraData={`${listSelectedIndex}-${currentChannelIndex}|${favoriteIds.join(",")}`}
                     estimatedItemSize={CHANNEL_ROW_HEIGHT}
                     renderItem={({ item, index }) => {
                       const isCursor = index === listSelectedIndex;
                       const isPlaying = channels[currentChannelIndex]?.id === item.id;
+                      const isFav = favoriteIds.includes(item.id);
                       return (
                         // TV 端行不可聚焦（焦点由陷阱视图 + handleTVEvent 自管），
-                        // 移动端/平板端通过 onPress 触摸选台。
+                        // 移动端/平板端通过 onPress 触摸选台、长按收藏。
                         <Pressable
                           focusable={deviceType !== "tv"}
                           onPress={() => handleSelectChannel(item)}
+                          onLongPress={() => {
+                            void toggleFavoriteAndToast(item);
+                          }}
                         >
                           <View
                             style={[
@@ -392,6 +476,7 @@ export default function LiveScreen() {
                             ]}
                           >
                             {isPlaying && <View style={styles.playingDot} />}
+                            {isFav && <Text style={styles.favStar}>★</Text>}
                             <Text
                               numberOfLines={1}
                               style={[
@@ -402,6 +487,7 @@ export default function LiveScreen() {
                             >
                               {item.name || "未知频道"}
                             </Text>
+                            {item.catchupSource ? <Text style={styles.catchupBadge}>回看</Text> : null}
                           </View>
                         </Pressable>
                       );
@@ -479,6 +565,22 @@ const styles = StyleSheet.create({
   },
   playingText: {
     color: Colors.dark.primary,
+  },
+  favStar: {
+    color: "#f5c518",
+    fontSize: 12,
+    marginRight: 6,
+  },
+  catchupBadge: {
+    color: "#9ec9ff",
+    fontSize: 10,
+    borderWidth: 1,
+    borderColor: "rgba(158, 201, 255, 0.6)",
+    borderRadius: 4,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    marginLeft: 8,
+    overflow: "hidden",
   },
 });
 
