@@ -60,6 +60,9 @@ const useDetailStore = create<DetailState>((set, get) => ({
       error: null,
       allSourcesLoaded: false,
       controller: newController,
+      // 失败源列表属于「当前这部影片」的会话状态：加载新影片时必须重置，
+      // 否则在 A 片失败的源在看 B 片时仍会被当作不可用而跳过。
+      failedSources: new Set(),
     });
 
     const { videoSource } = useSettingsStore.getState();
