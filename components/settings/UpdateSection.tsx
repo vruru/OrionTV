@@ -1,9 +1,16 @@
 import React from "react";
 import { View, StyleSheet, Platform, ActivityIndicator } from "react-native";
+import * as Updates from "expo-updates";
 import { ThemedText } from "../ThemedText";
 import { StyledButton } from "../StyledButton";
 import { useUpdateStore } from "@/stores/updateStore";
+import Logger from "@/utils/Logger";
 // import { UPDATE_CONFIG } from "@/constants/UpdateConfig";
+
+const logger = Logger.withTag("OtaUpdate");
+
+// EAS Update 热更新状态：idle → checking → downloading → ready / error / none
+type OtaState = "idle" | "checking" | "downloading" | "ready" | "none" | "error";
 
 export function UpdateSection() {
   const { 
@@ -18,6 +25,11 @@ export function UpdateSection() {
   } = useUpdateStore();
 
   const [checking, setChecking] = React.useState(false);
+  const [otaState, setOtaState] = React.useState<OtaState>("idle");
+  const [otaMessage, setOtaMessage] = React.useState<string | null>(null);
+
+  // 开发构建 / Expo Go 下 expo-updates 不可用
+  const otaSupported = Updates.isEnabled;
 
   const handleCheckUpdate = async () => {
     setChecking(true);
@@ -25,6 +37,37 @@ export function UpdateSection() {
       await checkForUpdate(false);
     } finally {
       setChecking(false);
+    }
+  };
+
+  // 检查并下载 EAS OTA 热更新；下载完成需重启生效
+  const handleOtaCheck = async () => {
+    if (!otaSupported) return;
+    setOtaState("checking");
+    setOtaMessage(null);
+    try {
+      const result = await Updates.checkForUpdateAsync();
+      if (!result.isAvailable) {
+        setOtaState("none");
+        setOtaMessage("已是最新热更新");
+        return;
+      }
+      setOtaState("downloading");
+      await Updates.fetchUpdateAsync();
+      setOtaState("ready");
+      setOtaMessage("热更新已下载，重启后生效");
+    } catch (e) {
+      logger.info("OTA check/fetch failed:", e);
+      setOtaState("error");
+      setOtaMessage("检查热更新失败，请稍后重试");
+    }
+  };
+
+  const handleOtaReload = async () => {
+    try {
+      await Updates.reloadAsync();
+    } catch (e) {
+      logger.info("OTA reload failed:", e);
     }
   };
 
@@ -74,6 +117,54 @@ export function UpdateSection() {
           )}
         </StyledButton>
       </View>
+
+      {/* EAS OTA 热更新：JS bundle 级更新，无需重装应用 */}
+      <View style={styles.otaDivider} />
+      <ThemedText style={styles.otaTitle}>热更新（OTA）</ThemedText>
+      {otaSupported ? (
+        <>
+          <View style={styles.row}>
+            <ThemedText style={styles.label}>通道 / 运行时版本</ThemedText>
+            <ThemedText style={styles.value} numberOfLines={1}>
+              {Updates.channel || "默认"} / {Updates.runtimeVersion || "未知"}
+            </ThemedText>
+          </View>
+          {otaMessage && (
+            <View style={styles.row}>
+              <ThemedText style={styles.label}>检查结果</ThemedText>
+              <ThemedText
+                style={[
+                  styles.value,
+                  otaState === "error" ? styles.errorText : styles.latestVersion,
+                ]}
+              >
+                {otaMessage}
+              </ThemedText>
+            </View>
+          )}
+          <View style={styles.buttonContainer}>
+            {otaState === "ready" ? (
+              <StyledButton onPress={handleOtaReload} style={styles.button}>
+                <ThemedText style={styles.buttonText}>立即重启生效</ThemedText>
+              </StyledButton>
+            ) : (
+              <StyledButton
+                onPress={handleOtaCheck}
+                disabled={otaState === "checking" || otaState === "downloading"}
+                style={styles.button}
+              >
+                {otaState === "checking" || otaState === "downloading" ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <ThemedText style={styles.buttonText}>检查热更新</ThemedText>
+                )}
+              </StyledButton>
+            )}
+          </View>
+        </>
+      ) : (
+        <ThemedText style={styles.hint}>开发模式下热更新不可用，请在正式构建中使用</ThemedText>
+      )}
 
       {/* {UPDATE_CONFIG.AUTO_CHECK && (
         <ThemedText style={styles.hint}>
@@ -151,5 +242,17 @@ const styles = StyleSheet.create({
     color: "#666",
     marginTop: 12,
     textAlign: "center",
+  },
+  otaDivider: {
+    height: 1,
+    backgroundColor: "rgba(255, 255, 255, 0.1)",
+    marginTop: 20,
+    marginBottom: 12,
+  },
+  otaTitle: {
+    fontSize: Platform.isTV ? 18 : 15,
+    fontWeight: "bold",
+    color: "#ccc",
+    marginBottom: 12,
   },
 });
