@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
-import { View, FlatList, StyleSheet, ActivityIndicator, Modal, useTVEventHandler, HWEvent, Text, Pressable } from "react-native";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { View, FlatList, StyleSheet, ActivityIndicator, Modal, useTVEventHandler, HWEvent, Text, TextInput, Pressable } from "react-native";
 import { FlashList } from "@shopify/flash-list";
 import Toast from "react-native-toast-message";
+import { QrCode } from "lucide-react-native";
 import LivePlayer from "@/components/LivePlayer";
 import { fetchAndParseM3u, getPlayableUrl, Channel } from "@/services/m3u";
 import { api } from "@/services/api";
@@ -9,6 +10,9 @@ import { ThemedView } from "@/components/ThemedView";
 import { Colors } from "@/constants/Colors";
 import { useSettingsStore } from "@/stores/settingsStore";
 import useLiveFavoritesStore from "@/stores/liveFavoritesStore";
+import { useRemoteControlStore } from "@/stores/remoteControlStore";
+import { RemoteControlModal } from "@/components/RemoteControlModal";
+import { matchChannelSearch } from "@/utils/pinyin";
 import { EpgData, fetchEpg, getCurrentProgramme, buildEpgKeys, formatProgrammeTime } from "@/services/epg";
 import Logger from "@/utils/Logger";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
@@ -37,8 +41,9 @@ const mapChannels = (
     }));
 
 export default function LiveScreen() {
-  const { m3uUrl, apiBaseUrl, epgUrl } = useSettingsStore();
+  const { m3uUrl, apiBaseUrl, epgUrl, remoteInputEnabled } = useSettingsStore();
   const { favoriteIds, load: loadFavorites, toggle: toggleFavorite } = useLiveFavoritesStore();
+  const { showModal: showRemoteModal, lastMessage, targetPage, clearMessage } = useRemoteControlStore();
   
   // 响应式布局配置
   const responsiveConfig = useResponsiveLayout();
@@ -56,6 +61,10 @@ export default function LiveScreen() {
   const [channelTitle, setChannelTitle] = useState<string | null>(null);
   // EPG 节目单数据（设置了 epgUrl 才有）
   const [epgData, setEpgData] = useState<EpgData | null>(null);
+  // 频道搜索：有关键词时节目表切换为跨分组搜索结果模式
+  const [searchKeyword, setSearchKeyword] = useState("");
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const searchInputRef = useRef<TextInput>(null);
   // Self-managed cursor within the current group's channel list (like TiviMate
   // etc.): we don't rely on the OS focus engine to move through the list.
   const [listSelectedIndex, setListSelectedIndex] = useState(0);
@@ -67,6 +76,8 @@ export default function LiveScreen() {
   const selectedGroupRef = useRef("");
   const channelGroupsRef = useRef<string[]>([]);
   const fastIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  // 搜索模式的最新值镜像（handleTVEvent 闭包里读取）
+  const searchModeRef = useRef(false);
 
   const CHANNEL_ROW_HEIGHT = deviceType === "mobile" ? 48 : 42;
 
@@ -78,9 +89,21 @@ export default function LiveScreen() {
   const displayGroups = favoriteChannels.length > 0 ? [FAVORITES_GROUP, ...channelGroups] : channelGroups;
   const currentGroupList =
     selectedGroup === FAVORITES_GROUP ? favoriteChannels : groupedChannels[selectedGroup] || [];
-  groupListRef.current = currentGroupList;
+
+  // 搜索模式：跨所有分组按名称/拼音首字母过滤
+  const trimmedKeyword = searchKeyword.trim();
+  const isSearchMode = trimmedKeyword.length > 0;
+  const searchResults = useMemo(
+    () => (isSearchMode ? channels.filter((c) => matchChannelSearch(c.name, trimmedKeyword)) : []),
+    [channels, isSearchMode, trimmedKeyword]
+  );
+  // 搜索模式下列表操作（移动光标/确认播放/菜单键收藏）都作用于搜索结果
+  const activeList = isSearchMode ? searchResults : currentGroupList;
+
+  groupListRef.current = activeList;
   selectedGroupRef.current = selectedGroup;
   channelGroupsRef.current = displayGroups;
+  searchModeRef.current = isSearchMode;
 
   // 加载频道收藏（本地持久化）
   useEffect(() => {
@@ -119,6 +142,23 @@ export default function LiveScreen() {
       setListSelectedIndex(next);
     }
   }, [favoriteChannels, selectedGroup, channelGroups, groupedChannels]);
+
+  // 搜索词变化时回到搜索结果顶部
+  useEffect(() => {
+    cursorRef.current = 0;
+    setListSelectedIndex(0);
+  }, [trimmedKeyword]);
+
+  // 远程输入（手机扫码打字）直投频道搜索
+  useEffect(() => {
+    if (lastMessage && targetPage === "live") {
+      setSearchKeyword(lastMessage.text);
+      setIsChannelListVisible(true);
+      cursorRef.current = 0;
+      setListSelectedIndex(0);
+      clearMessage();
+    }
+  }, [lastMessage, targetPage, clearMessage]);
 
   useEffect(() => {
     const loadChannels = async () => {
@@ -212,6 +252,19 @@ export default function LiveScreen() {
     });
   };
 
+  // 手机扫码远程输入搜索词（与搜索页同一套 WebSocket 远程输入）
+  const handleQrPress = () => {
+    if (!remoteInputEnabled) {
+      Toast.show({
+        type: "info",
+        text1: "远程输入未启用",
+        text2: "请先在设置页面中启用远程输入功能",
+      });
+      return;
+    }
+    showRemoteModal("live");
+  };
+
   const scrollToRow = (index: number, center = true) => {
     try {
       channelListRef.current?.scrollToIndex({ index, animated: false, viewPosition: center ? 0.5 : 0 });
@@ -221,8 +274,9 @@ export default function LiveScreen() {
   };
 
   // 打开频道列表时，把光标定位到当前正在播放的频道并滚动到它。
+  // 搜索模式（含远程输入直投）下不重置光标，保留在搜索结果顶部。
   useEffect(() => {
-    if (!isChannelListVisible || channels.length === 0) return;
+    if (!isChannelListVisible || channels.length === 0 || searchModeRef.current) return;
     const current = channels[currentChannelIndex];
     if (!current) return;
     const group = current.group || "Other";
@@ -245,8 +299,12 @@ export default function LiveScreen() {
       fastIntervalRef.current = null;
     }
   };
+  // 关闭列表时停掉快速滚动并清空搜索词
   useEffect(() => {
-    if (!isChannelListVisible) stopFast();
+    if (!isChannelListVisible) {
+      stopFast();
+      setSearchKeyword("");
+    }
   }, [isChannelListVisible]);
   useEffect(() => () => stopFast(), []);
 
@@ -324,6 +382,8 @@ export default function LiveScreen() {
   const handleTVEvent = useCallback(
     (event: HWEvent) => {
       if (deviceType !== "tv") return;
+      // 搜索框聚焦时按键交给系统键盘/输入框，不做列表导航
+      if (isSearchFocused) return;
       const type = event?.eventType;
       const action = (event as any)?.eventKeyAction;
 
@@ -350,16 +410,22 @@ export default function LiveScreen() {
           break;
         }
         case "up":
-          moveCursor(-1);
+          // 光标已在首行时再按上：焦点交给搜索框（TV 端弹系统键盘输入）
+          if (cursorRef.current === 0) {
+            searchInputRef.current?.focus();
+          } else {
+            moveCursor(-1);
+          }
           break;
         case "down":
           moveCursor(1);
           break;
         case "left":
-          changeGroup(-1);
+          // 搜索模式下隐藏了分组列，左右键不切换分组
+          if (!searchModeRef.current) changeGroup(-1);
           break;
         case "right":
-          changeGroup(1);
+          if (!searchModeRef.current) changeGroup(1);
           break;
         case "longUp":
           if (action === 0) {
@@ -378,7 +444,7 @@ export default function LiveScreen() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [deviceType, isChannelListVisible, changeChannel]
+    [deviceType, isChannelListVisible, isSearchFocused, changeChannel]
   );
 
   useTVEventHandler(deviceType === "tv" ? handleTVEvent : () => {});
@@ -418,41 +484,63 @@ export default function LiveScreen() {
             {/* 焦点陷阱：唯一可聚焦元素，兜住焦点避免系统焦点乱跳。
                 按键处理（含确认键）统一在 handleTVEvent 里完成。 */}
             <Pressable focusable hasTVPreferredFocus style={styles.focusTrap} />
-            <Text style={dynamicStyles.modalTitle}>
-              {deviceType === "tv"
-                ? "选择频道（左右切换分类 · 上下选频道 · 确认播放 · 菜单键收藏）"
-                : "选择频道（点按播放 · 长按收藏）"}
-            </Text>
+            {/* 搜索行：移动端直接点按输入；TV 端光标在首行时再按上键聚焦，
+                也可扫码用手机远程输入。 */}
+            <View style={dynamicStyles.searchRow}>
+              <TextInput
+                ref={searchInputRef}
+                style={dynamicStyles.searchInput}
+                placeholder={deviceType === "tv" ? "搜索频道（首行再按上键输入）" : "搜索频道（拼音 / 首字母）"}
+                placeholderTextColor="#888"
+                value={searchKeyword}
+                onChangeText={setSearchKeyword}
+                onFocus={() => setIsSearchFocused(true)}
+                onBlur={() => setIsSearchFocused(false)}
+                returnKeyType="search"
+              />
+              {deviceType !== "mobile" && (
+                <Pressable style={dynamicStyles.qrButton} onPress={handleQrPress}>
+                  <QrCode size={deviceType === "tv" ? 22 : 18} color="white" />
+                </Pressable>
+              )}
+            </View>
             <View style={dynamicStyles.listContainer}>
-              <View style={dynamicStyles.groupColumn}>
-                <FlatList
-                  data={channelGroups}
-                  keyExtractor={(item, index) => `group-${item}-${index}`}
-                  extraData={selectedGroup}
-                  renderItem={({ item }) => {
-                    const active = selectedGroup === item;
-                    return (
-                      <View style={[dynamicStyles.groupRow, active && styles.rowActive]}>
-                        <Text
-                          numberOfLines={1}
-                          style={[dynamicStyles.groupRowText, active && styles.rowActiveText]}
-                        >
-                          {item}
-                        </Text>
-                      </View>
-                    );
-                  }}
-                />
-              </View>
+              {/* 搜索模式下隐藏分组列，结果为跨分组平铺列表 */}
+              {!isSearchMode && (
+                <View style={dynamicStyles.groupColumn}>
+                  <FlatList
+                    data={displayGroups}
+                    keyExtractor={(item, index) => `group-${item}-${index}`}
+                    extraData={selectedGroup}
+                    renderItem={({ item }) => {
+                      const active = selectedGroup === item;
+                      return (
+                        <View style={[dynamicStyles.groupRow, active && styles.rowActive]}>
+                          <Text
+                            numberOfLines={1}
+                            style={[dynamicStyles.groupRowText, active && styles.rowActiveText]}
+                          >
+                            {item}
+                          </Text>
+                        </View>
+                      );
+                    }}
+                  />
+                </View>
+              )}
               <View style={dynamicStyles.channelColumn}>
                 {isLoading ? (
                   <ActivityIndicator size="large" />
+                ) : isSearchMode && activeList.length === 0 ? (
+                  <View style={styles.emptyResult}>
+                    <Text style={styles.emptyResultText}>没有匹配「{trimmedKeyword}」的频道</Text>
+                  </View>
                 ) : (
                   <FlashList
                     ref={channelListRef}
-                    data={currentGroupList}
+                    data={activeList}
                     keyExtractor={(item, index) => `${item.id}-${index}`}
-                    extraData={`${listSelectedIndex}-${currentChannelIndex}|${favoriteIds.join(",")}`}
+                    extraData={`${listSelectedIndex}-${currentChannelIndex}|${favoriteIds.join(",")}|${trimmedKeyword}`}
                     estimatedItemSize={CHANNEL_ROW_HEIGHT}
                     renderItem={({ item, index }) => {
                       const isCursor = index === listSelectedIndex;
@@ -499,6 +587,7 @@ export default function LiveScreen() {
           </View>
         </View>
       </Modal>
+      <RemoteControlModal />
     </>
   );
 
@@ -571,6 +660,17 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginRight: 6,
   },
+  emptyResult: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 20,
+  },
+  emptyResultText: {
+    color: "#999",
+    fontSize: 14,
+    textAlign: "center",
+  },
   catchupBadge: {
     color: "#9ec9ff",
     fontSize: 10,
@@ -604,12 +704,28 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
       backgroundColor: "rgba(0, 0, 0, 0.85)",
       padding: spacing,
     },
-    modalTitle: {
-      color: "white",
+    searchRow: {
+      flexDirection: "row",
+      alignItems: "center",
       marginBottom: spacing / 2,
-      textAlign: "center",
-      fontSize: isMobile ? 18 : 16,
-      fontWeight: "bold",
+    },
+    searchInput: {
+      flex: 1,
+      height: isMobile ? 44 : 40,
+      backgroundColor: "#2c2c2e",
+      borderRadius: 8,
+      paddingHorizontal: spacing / 2,
+      color: "white",
+      fontSize: isMobile ? 16 : 15,
+    },
+    qrButton: {
+      width: isMobile ? 44 : 40,
+      height: isMobile ? 44 : 40,
+      marginLeft: spacing / 2,
+      borderRadius: 8,
+      backgroundColor: "#2c2c2e",
+      justifyContent: "center",
+      alignItems: "center",
     },
     listContainer: {
       flex: 1,
