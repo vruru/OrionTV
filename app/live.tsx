@@ -15,6 +15,7 @@ import { useRemoteControlStore } from "@/stores/remoteControlStore";
 import { RemoteControlModal } from "@/components/RemoteControlModal";
 import { matchChannelSearch } from "@/utils/pinyin";
 import { nextResizeMode, RESIZE_MODE_LABELS } from "@/utils/resizeMode";
+import { isTVLongPressStart } from "@/utils/tvRemote";
 import { EpgData, EpgProgramme, fetchEpg, getCurrentProgramme, buildEpgKeys, formatProgrammeTime } from "@/services/epg";
 import { fetchRecordedChannels, buildReplayUrl, fetchCoverage } from "@/services/replay";
 import Logger from "@/utils/Logger";
@@ -136,6 +137,7 @@ export default function LiveScreen() {
   const replaySessionRef = useRef<{ url: string; title: string; channelName: string; channel: Channel; list: EpgProgramme[]; index: number } | null>(null);
   const epgDataRef = useRef<EpgData | null>(null);
   const epgLoadStateRef = useRef<"idle" | "loading" | "ready" | "failed">("idle");
+  const epgLoadStartedAtRef = useRef(0);
   const recordedChannelsRef = useRef<Set<string>>(new Set());
   // 频道搜索：有关键词时节目表切换为跨分组搜索结果模式
   const [searchKeyword, setSearchKeyword] = useState("");
@@ -201,15 +203,16 @@ export default function LiveScreen() {
 
   // 配置了 EPG 地址才拉取节目单；留空即不启用（顺带探测回看能力）
   useEffect(() => {
-    if (!epgUrl || channels.length === 0) {
+    const normalizedEpgUrl = epgUrl.trim();
+    if (!normalizedEpgUrl || channels.length === 0) {
       setEpgData(null);
       setEpgLoadState("idle");
       return;
     }
-    if (!isScreenFocused) return;
 
     const controller = new AbortController();
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    epgLoadStartedAtRef.current = Date.now();
     epgLoadStateRef.current = "loading";
     setEpgLoadState("loading");
     const loadEpg = async (allowRetry: boolean) => {
@@ -219,7 +222,7 @@ export default function LiveScreen() {
         if (channel.tvgName) wantedChannels.add(channel.tvgName);
         wantedChannels.add(channel.name);
       }
-      const data = await fetchEpg(epgUrl, wantedChannels, controller.signal);
+      const data = await fetchEpg(normalizedEpgUrl, wantedChannels, controller.signal);
       if (controller.signal.aborted) return;
       if (data) {
         setEpgData(data);
@@ -232,22 +235,22 @@ export default function LiveScreen() {
         // 进入直播页后永久保持“无节目表”状态。
         retryTimer = setTimeout(() => {
           void loadEpg(false);
-        }, 5000);
+        }, 2000);
       } else {
         epgLoadStateRef.current = "failed";
         setEpgLoadState("failed");
       }
     };
-    // 先让播放器建立连接并显示首帧，避免 EPG 下载/解析和首帧初始化同时争抢 JS 线程。
+    // 稍微错开播放器首帧；局域网 EPG 很小，无需让用户等待数秒才开始加载。
     const timer = setTimeout(() => {
       void loadEpg(true);
-    }, 1500);
+    }, 300);
     return () => {
       clearTimeout(timer);
       if (retryTimer) clearTimeout(retryTimer);
       controller.abort();
     };
-  }, [epgUrl, channels, isScreenFocused, epgReloadKey]);
+  }, [epgUrl, channels, epgReloadKey]);
 
   // 配置了回看服务地址才拉取 NAS 录制频道清单；留空即不启用回看（功能自动隐藏）
   useEffect(() => {
@@ -475,7 +478,9 @@ export default function LiveScreen() {
 
     const configuredEpgUrl = useSettingsStore.getState().epgUrl.trim();
     if (configuredEpgUrl && !epgDataRef.current) {
-      if (epgLoadStateRef.current === "failed") {
+      const loadHasStalled =
+        epgLoadStateRef.current === "loading" && Date.now() - epgLoadStartedAtRef.current > 12_000;
+      if (epgLoadStateRef.current === "failed" || loadHasStalled) {
         epgLoadStateRef.current = "loading";
         setEpgLoadState("loading");
         setEpgReloadKey((key) => key + 1);
@@ -809,6 +814,8 @@ export default function LiveScreen() {
           }
           case "longSelect": {
             lastLongSelectRef.current = Date.now();
+            // react-native-tvos 对一次长按会分别发送按下(0)和松开(1)事件，只执行按下。
+            if (!isTVLongPressStart(action)) break;
             const prog = replayProgrammesRef.current[replayCursorRef.current];
             if (prog) playReplay(prog, replayFullListRef.current, replayFullListRef.current.indexOf(prog));
             break;
@@ -863,6 +870,8 @@ export default function LiveScreen() {
         case "longSelect": {
           // 长按确认键：收藏/取消收藏光标所在频道（与手机端长按一致）
           lastLongSelectRef.current = Date.now();
+          // 同一次长按的松开事件不能再次 toggle，否则会刚收藏就立刻取消。
+          if (!isTVLongPressStart(action)) break;
           const ch = groupListRef.current[cursorRef.current];
           if (ch) void toggleFavoriteAndToast(ch);
           break;

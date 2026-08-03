@@ -6,6 +6,7 @@
  * 且属于目标频道的节目，内存与时间开销都可控。
  */
 import Logger from '@/utils/Logger';
+import { Platform } from 'react-native';
 
 const logger = Logger.withTag('EPG');
 
@@ -58,6 +59,7 @@ export const normalizeChannelName = (name: string): string => {
 
 const MAX_EPG_BYTES = 40 * 1024 * 1024; // 超过 40MB 的 EPG 拒绝解析，避免卡死
 const EPG_CACHE_TTL = 10 * 60 * 1000;
+const EPG_DOWNLOAD_TIMEOUT = 10_000;
 const epgCache = new Map<string, { data: EpgData; expiresAt: number }>();
 
 const CHANNEL_RE_SOURCE = '<channel\\s+id="([^"]+)"[^>]*>([\\s\\S]*?)<\\/channel>';
@@ -259,6 +261,41 @@ export const parseEpgXmlAsync = async (
   return finishEpgData(target, now);
 };
 
+const downloadEpgWithFetch = async (epgUrl: string, signal: AbortSignal): Promise<string> => {
+  const response = await fetch(epgUrl, { signal });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.text();
+};
+
+/**
+ * Android TV 上使用原生下载通道，绕过部分盒子中 fetch().text() 读取较大 XML 时
+ * 一直不结束的问题。react-native-blob-util 已随 APK 原生构建。
+ */
+const downloadEpgWithNativeTvClient = async (epgUrl: string, signal: AbortSignal): Promise<string> => {
+  throwIfAborted(signal);
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const ReactNativeBlobUtil = require('react-native-blob-util').default as typeof import('react-native-blob-util').default;
+  const task = ReactNativeBlobUtil
+    .config({ timeout: EPG_DOWNLOAD_TIMEOUT })
+    .fetch('GET', epgUrl, {
+      Accept: 'application/xml,text/xml,*/*',
+      'Cache-Control': 'no-cache',
+    });
+  const abort = () => {
+    task.cancel();
+  };
+  signal.addEventListener('abort', abort, { once: true });
+  try {
+    const response = await task;
+    const status = response.info().status;
+    if (status < 200 || status >= 300) throw new Error(`HTTP ${status}`);
+    const text = await response.text();
+    return String(text);
+  } finally {
+    signal.removeEventListener('abort', abort);
+  }
+};
+
 export const fetchEpg = async (
   epgUrl: string,
   wantedChannelIds?: Set<string>,
@@ -277,16 +314,21 @@ export const fetchEpg = async (
   const abortFromCaller = () => controller.abort();
   signal?.addEventListener('abort', abortFromCaller, { once: true });
   try {
-    // 网络下载需要超时保护，但本地解析不能共用这个计时器。低性能电视会主动
-    // 分片让出 JS 线程，解析可能超过 20 秒；此前会因此把已经下载好的 EPG
-    // 自己中止，最终表现为所有频道都没有“节目表”标志。
-    const timer = setTimeout(() => controller.abort(), 20_000);
+    // 网络下载需要超时保护，但本地解析不能共用这个计时器。
+    const timer = setTimeout(() => controller.abort(), EPG_DOWNLOAD_TIMEOUT);
     try {
-      const response = await fetch(epgUrl, { signal: controller.signal });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+      let text: string;
+      if (Platform.OS === 'android' && Platform.isTV) {
+        try {
+          text = await downloadEpgWithNativeTvClient(epgUrl, controller.signal);
+        } catch (nativeError) {
+          if (controller.signal.aborted) throw nativeError;
+          logger.info('电视原生 EPG 下载失败，改用标准网络请求:', nativeError);
+          text = await downloadEpgWithFetch(epgUrl, controller.signal);
+        }
+      } else {
+        text = await downloadEpgWithFetch(epgUrl, controller.signal);
       }
-      const text = await response.text();
       clearTimeout(timer);
       if (text.length > MAX_EPG_BYTES) {
         logger.info(`EPG 文件过大（${(text.length / 1024 / 1024).toFixed(1)}MB），放弃解析`);

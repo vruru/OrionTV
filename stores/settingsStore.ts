@@ -151,11 +151,17 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       }
     }
 
+    // 电视键盘和远程粘贴有时会在 URL 尾部带入不可见空格/换行；网络层不会
+    // 始终自动清理，EPG 会因此一直重试一个无效地址。
+    const processedM3uUrl = m3uUrl.trim();
+    const processedEpgUrl = epgUrl.trim();
+    const processedReplayServerUrl = replayServerUrl.trim();
+
     await SettingsManager.save({
       apiBaseUrl: processedApiBaseUrl,
-      m3uUrl,
-      epgUrl,
-      replayServerUrl,
+      m3uUrl: processedM3uUrl,
+      epgUrl: processedEpgUrl,
+      replayServerUrl: processedReplayServerUrl,
       remoteInputEnabled,
       videoSource,
       autoSkipIntroOutro,
@@ -167,7 +173,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     }
     api.setBaseUrl(processedApiBaseUrl);
     // Also update the URL in the state so the input field shows the processed URL
-    set({ isModalVisible: false, apiBaseUrl: processedApiBaseUrl });
+    set({
+      isModalVisible: false,
+      apiBaseUrl: processedApiBaseUrl,
+      m3uUrl: processedM3uUrl,
+      epgUrl: processedEpgUrl,
+      replayServerUrl: processedReplayServerUrl,
+    });
     await get().fetchServerConfig();
   },
   showModal: () => set({ isModalVisible: true }),
