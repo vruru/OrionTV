@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { View, TextInput, StyleSheet, Alert, Keyboard, TouchableOpacity } from "react-native";
+import { View, TextInput, StyleSheet, Alert, Keyboard, TouchableOpacity, Pressable } from "react-native";
 import { ThemedView } from "@/components/ThemedView";
 import { ThemedText } from "@/components/ThemedText";
 import VideoCard from "@/components/VideoCard";
@@ -10,6 +10,7 @@ import { StyledButton } from "@/components/StyledButton";
 import { useRemoteControlStore } from "@/stores/remoteControlStore";
 import { RemoteControlModal } from "@/components/RemoteControlModal";
 import { useSettingsStore } from "@/stores/settingsStore";
+import useSearchHistoryStore from "@/stores/searchHistoryStore";
 import { useRouter } from "expo-router";
 import { Colors } from "@/constants/Colors";
 import CustomScrollView from "@/components/CustomScrollView";
@@ -29,14 +30,47 @@ export default function SearchScreen() {
   const [error, setError] = useState<string | null>(null);
   const textInputRef = useRef<TextInput>(null);
   const [isInputFocused, setIsInputFocused] = useState(false);
+  // 实时搜索建议（输入防抖后取前几个标题）
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const suggestionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const suggestionSeq = useRef(0);
   const { showModal: showRemoteModal, lastMessage, targetPage, clearMessage } = useRemoteControlStore();
   const { remoteInputEnabled } = useSettingsStore();
+  const { history, load: loadHistory, add: addHistory, clear: clearHistory } = useSearchHistoryStore();
   const router = useRouter();
 
   // 响应式布局配置
   const responsiveConfig = useResponsiveLayout();
   const commonStyles = getCommonResponsiveStyles(responsiveConfig);
   const { deviceType, spacing } = responsiveConfig;
+
+  useEffect(() => {
+    loadHistory();
+  }, [loadHistory]);
+
+  // 输入防抖 300ms 拉取搜索建议；序号守卫丢弃过期响应
+  useEffect(() => {
+    const term = keyword.trim();
+    if (suggestionTimer.current) clearTimeout(suggestionTimer.current);
+    if (!term) {
+      setSuggestions([]);
+      return;
+    }
+    suggestionTimer.current = setTimeout(async () => {
+      const seq = ++suggestionSeq.current;
+      try {
+        const res = await api.searchVideos(term);
+        if (seq !== suggestionSeq.current) return;
+        const titles = res.results.map((r) => r.title).filter(Boolean);
+        setSuggestions([...new Set(titles)].slice(0, 8));
+      } catch {
+        if (seq === suggestionSeq.current) setSuggestions([]);
+      }
+    }, 300);
+    return () => {
+      if (suggestionTimer.current) clearTimeout(suggestionTimer.current);
+    };
+  }, [keyword]);
 
   useEffect(() => {
     if (lastMessage && targetPage === 'search') {
@@ -64,6 +98,8 @@ export default function SearchScreen() {
       return;
     }
     Keyboard.dismiss();
+    setSuggestions([]); // 发起搜索后收起建议
+    addHistory(term);
     setLoading(true);
     setError(null);
     try {
@@ -82,6 +118,12 @@ export default function SearchScreen() {
   };
 
   const onSearchPress = () => handleSearch();
+
+  // 点击建议或历史词：填入并立即搜索
+  const pickSuggestion = (term: string) => {
+    setKeyword(term);
+    handleSearch(term);
+  };
 
   const handleQrPress = () => {
     if (!remoteInputEnabled) {
@@ -144,6 +186,44 @@ export default function SearchScreen() {
           </StyledButton>
         )}
       </View>
+
+      {/* 实时搜索建议：输入时防抖拉取，点词即搜 */}
+      {isInputFocused && suggestions.length > 0 && (
+        <View style={dynamicStyles.suggestionBox}>
+          {suggestions.map((s) => (
+            <Pressable
+              key={s}
+              style={({ focused }: any) => [dynamicStyles.suggestionItem, focused && dynamicStyles.suggestionItemFocused]}
+              onPress={() => pickSuggestion(s)}
+            >
+              <ThemedText style={dynamicStyles.suggestionText} numberOfLines={1}>
+                {s}
+              </ThemedText>
+            </Pressable>
+          ))}
+        </View>
+      )}
+
+      {/* 搜索历史：初始空态显示，点词即搜，可一键清空 */}
+      {!keyword.trim() && results.length === 0 && history.length > 0 && (
+        <View style={dynamicStyles.historySection}>
+          <View style={dynamicStyles.historyHeader}>
+            <ThemedText style={dynamicStyles.historyTitle}>搜索历史</ThemedText>
+            <Pressable onPress={clearHistory}>
+              <ThemedText style={dynamicStyles.historyClear}>清空</ThemedText>
+            </Pressable>
+          </View>
+          <View style={dynamicStyles.historyTags}>
+            {history.map((h) => (
+              <Pressable key={h} style={dynamicStyles.historyTag} onPress={() => pickSuggestion(h)}>
+                <ThemedText style={dynamicStyles.historyTagText} numberOfLines={1}>
+                  {h}
+                </ThemedText>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+      )}
 
       {loading ? (
         <VideoLoadingAnimation showProgressBar={false} />
@@ -234,6 +314,61 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
       color: "red",
       fontSize: isMobile ? 14 : 16,
       textAlign: "center",
+    },
+    suggestionBox: {
+      marginHorizontal: spacing,
+      marginTop: -spacing / 2,
+      marginBottom: spacing / 2,
+      backgroundColor: "#2c2c2e",
+      borderRadius: 8,
+      overflow: "hidden",
+    },
+    suggestionItem: {
+      paddingVertical: isMobile ? 12 : 10,
+      paddingHorizontal: spacing,
+    },
+    suggestionItemFocused: {
+      backgroundColor: Colors.dark.primary,
+    },
+    suggestionText: {
+      color: "white",
+      fontSize: isMobile ? 15 : 16,
+    },
+    historySection: {
+      paddingHorizontal: spacing,
+      marginBottom: spacing,
+    },
+    historyHeader: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: spacing / 2,
+    },
+    historyTitle: {
+      color: "#ccc",
+      fontSize: isMobile ? 14 : 15,
+      fontWeight: "bold",
+    },
+    historyClear: {
+      color: "#888",
+      fontSize: isMobile ? 13 : 14,
+    },
+    historyTags: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+    },
+    historyTag: {
+      backgroundColor: "#2c2c2e",
+      borderRadius: 16,
+      paddingVertical: isMobile ? 8 : 6,
+      paddingHorizontal: 14,
+      marginRight: spacing / 2,
+      marginBottom: spacing / 2,
+      maxWidth: 200,
+    },
+    historyTagText: {
+      color: "white",
+      fontSize: isMobile ? 13 : 14,
     },
   });
 };
