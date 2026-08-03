@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { View, FlatList, StyleSheet, ActivityIndicator, Modal, useTVEventHandler, HWEvent, Text, Pressable } from "react-native";
+import { FlashList } from "@shopify/flash-list";
 import LivePlayer from "@/components/LivePlayer";
 import { fetchAndParseM3u, getPlayableUrl, Channel } from "@/services/m3u";
 import { api } from "@/services/api";
@@ -50,7 +51,7 @@ export default function LiveScreen() {
   // etc.): we don't rely on the OS focus engine to move through the list.
   const [listSelectedIndex, setListSelectedIndex] = useState(0);
   const titleTimer = useRef<NodeJS.Timeout | null>(null);
-  const channelListRef = useRef<FlatList<Channel>>(null);
+  const channelListRef = useRef<FlashList<Channel>>(null);
   // Refs holding the latest values so key-repeat intervals read fresh data.
   const cursorRef = useRef(0);
   const groupListRef = useRef<Channel[]>([]);
@@ -367,19 +368,12 @@ export default function LiveScreen() {
                 {isLoading ? (
                   <ActivityIndicator size="large" />
                 ) : (
-                  <FlatList
+                  <FlashList
                     ref={channelListRef}
                     data={currentGroupList}
                     keyExtractor={(item, index) => `${item.id}-${index}`}
                     extraData={`${listSelectedIndex}-${currentChannelIndex}`}
-                    getItemLayout={(_, index) => ({
-                      length: CHANNEL_ROW_HEIGHT,
-                      offset: CHANNEL_ROW_HEIGHT * index,
-                      index,
-                    })}
-                    initialNumToRender={20}
-                    maxToRenderPerBatch={20}
-                    windowSize={15}
+                    estimatedItemSize={CHANNEL_ROW_HEIGHT}
                     renderItem={({ item, index }) => {
                       const isCursor = index === listSelectedIndex;
                       const isPlaying = channels[currentChannelIndex]?.id === item.id;
