@@ -5,7 +5,6 @@ import { SettingsSection } from "./SettingsSection";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useRemoteControlStore } from "@/stores/remoteControlStore";
 import { useButtonAnimation } from "@/hooks/useAnimation";
-import { useSectionEditMode } from "@/hooks/useSectionEditMode";
 import { Colors } from "@/constants/Colors";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 
@@ -13,16 +12,15 @@ interface RemoteInputSectionProps {
   onChanged: () => void;
   onFocus?: () => void;
   onBlur?: () => void;
-  onEditModeChange?: (editing: boolean) => void;
 }
 
-export const RemoteInputSection: React.FC<RemoteInputSectionProps> = ({ onChanged, onFocus, onBlur, onEditModeChange }) => {
+export const RemoteInputSection: React.FC<RemoteInputSectionProps> = ({ onChanged, onFocus, onBlur }) => {
   const { remoteInputEnabled } = useSettingsStore();
   const { isServerRunning, serverUrl, error } = useRemoteControlStore();
-  const [isSectionFocused, setIsSectionFocused] = React.useState(false);
+  const [isRowFocused, setIsRowFocused] = React.useState(false);
   const deviceType = useResponsiveLayout().deviceType;
   const isTV = deviceType === "tv";
-  const animationStyle = useButtonAnimation(isSectionFocused, 1.2);
+  const animationStyle = useButtonAnimation(isRowFocused, 1.2);
 
   const handleToggle = useCallback(() => {
     const s = useSettingsStore.getState();
@@ -30,32 +28,19 @@ export const RemoteInputSection: React.FC<RemoteInputSectionProps> = ({ onChange
     onChanged();
   }, [onChanged]);
 
-  const handleSectionFocus = () => {
-    setIsSectionFocused(true);
-    onFocus?.();
-  };
-
-  const handleSectionBlur = () => {
-    setIsSectionFocused(false);
-    onBlur?.();
-  };
-
-  const { editMode, enterEditMode } = useSectionEditMode({
-    deviceType,
-    itemCount: 1,
-    isSectionFocused,
-    onActivate: handleToggle,
-    onEditModeChange,
-  });
-
   return (
-    <SettingsSection focusable onFocus={handleSectionFocus} onBlur={handleSectionBlur} onPress={isTV ? enterEditMode : handleToggle}>
-      <Pressable focusable={!isTV} style={styles.settingItem} onPress={handleToggle}>
+    <SettingsSection onFocus={onFocus} onBlur={onBlur}>
+      <Pressable
+        style={[styles.settingItem, isRowFocused && styles.settingItemFocused]}
+        onFocus={() => setIsRowFocused(true)}
+        onBlur={() => setIsRowFocused(false)}
+        onPress={handleToggle}
+      >
         <View style={styles.settingInfo}>
           <ThemedText style={styles.settingName}>启用远程输入</ThemedText>
           {isTV && (
             <ThemedText style={styles.settingDescription}>
-              {editMode ? "确认键切换开关 · 返回键退出" : "按确认键进入设置"}
+              按确认键切换开关
             </ThemedText>
           )}
         </View>
@@ -115,6 +100,11 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     paddingVertical: 12,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+  },
+  settingItemFocused: {
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
   },
   settingInfo: {
     flex: 1,

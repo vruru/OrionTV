@@ -4,24 +4,19 @@ import { ThemedText } from "@/components/ThemedText";
 import { SettingsSection } from "./SettingsSection";
 import { useSpeedTestStore } from "@/stores/speedTestStore";
 import { useButtonAnimation } from "@/hooks/useAnimation";
-import { useSectionEditMode } from "@/hooks/useSectionEditMode";
 import { Colors } from "@/constants/Colors";
-import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { formatSpeed, speedColor } from "@/utils/sourceFilter";
 
 interface SpeedTestSectionProps {
   onFocus?: () => void;
   onBlur?: () => void;
-  onEditModeChange?: (editing: boolean) => void;
 }
 
-export const SpeedTestSection: React.FC<SpeedTestSectionProps> = ({ onFocus, onBlur, onEditModeChange }) => {
+export const SpeedTestSection: React.FC<SpeedTestSectionProps> = ({ onFocus, onBlur }) => {
   const { results, isTesting, done, currentName, currentMbps, progressDone, progressTotal, runTest, cancelTest } =
     useSpeedTestStore();
-  const [isSectionFocused, setIsSectionFocused] = React.useState(false);
-  const deviceType = useResponsiveLayout().deviceType;
-  const isTV = deviceType === "tv";
-  const animationStyle = useButtonAnimation(isSectionFocused, 1.05);
+  const [isButtonFocused, setIsButtonFocused] = React.useState(false);
+  const animationStyle = useButtonAnimation(isButtonFocused, 1.05);
 
   const testedCount = Object.keys(results).length;
   const lastTestedAt = Object.values(results).reduce((max, r) => Math.max(max, r.testedAt), 0);
@@ -30,43 +25,28 @@ export const SpeedTestSection: React.FC<SpeedTestSectionProps> = ({ onFocus, onB
     if (!isTesting) runTest();
   };
 
-  const handleSectionFocus = () => {
-    setIsSectionFocused(true);
-    onFocus?.();
-  };
-  const handleSectionBlur = () => {
-    setIsSectionFocused(false);
-    onBlur?.();
-  };
-
-  const { editMode, enterEditMode } = useSectionEditMode({
-    deviceType,
-    itemCount: 1,
-    isSectionFocused,
-    onActivate: start,
-    onEditModeChange,
-  });
-
   const lastLabel = testedCount > 0
     ? `上次测试：${new Date(lastTestedAt).toLocaleString()}（${testedCount} 个源）`
     : "尚未测试，点击开始测速";
 
   return (
     <SettingsSection
-      focusable
-      onFocus={handleSectionFocus}
-      onBlur={handleSectionBlur}
-      onPress={isTV ? enterEditMode : start}
+      onFocus={onFocus}
+      onBlur={onBlur}
     >
-      <Pressable focusable={!isTV} style={styles.settingItem} onPress={start}>
+      <Pressable
+        style={styles.settingItem}
+        onFocus={() => setIsButtonFocused(true)}
+        onBlur={() => setIsButtonFocused(false)}
+        onPress={start}
+      >
         <View style={styles.settingInfo}>
           <ThemedText style={styles.settingName}>源速度测试</ThemedText>
           <ThemedText style={styles.settingDescription}>
             {lastLabel}
-            {isTV ? (editMode ? " · 确认键开始 · 返回键退出" : " · 按确认键进入") : ""}
           </ThemedText>
         </View>
-        <Animated.View style={[styles.button, animationStyle, (isSectionFocused || editMode) && styles.buttonFocused]}>
+        <Animated.View style={[styles.button, animationStyle, isButtonFocused && styles.buttonFocused]}>
           <ThemedText style={styles.buttonText}>{isTesting ? "测试中..." : "开始测速"}</ThemedText>
         </Animated.View>
       </Pressable>

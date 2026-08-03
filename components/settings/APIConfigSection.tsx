@@ -1,11 +1,10 @@
-import React, { useState, useRef, useImperativeHandle, forwardRef, useEffect } from "react";
-import { View, TextInput, StyleSheet, Animated, Keyboard } from "react-native";
+import React, { useState, useRef, useImperativeHandle, forwardRef } from "react";
+import { View, TextInput, StyleSheet, Animated, TouchableOpacity } from "react-native";
 import { ThemedText } from "@/components/ThemedText";
 import { SettingsSection } from "./SettingsSection";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useRemoteControlStore } from "@/stores/remoteControlStore";
 import { useButtonAnimation } from "@/hooks/useAnimation";
-import { useSectionEditMode } from "@/hooks/useSectionEditMode";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { Colors } from "@/constants/Colors";
 
@@ -16,7 +15,6 @@ interface APIConfigSectionProps {
   onPress?: () => void;
   onInputFocus?: () => void;
   onInputBlur?: () => void;
-  onEditModeChange?: (editing: boolean) => void;
   hideDescription?: boolean;
 }
 
@@ -25,16 +23,16 @@ export interface APIConfigSectionRef {
 }
 
 export const APIConfigSection = forwardRef<APIConfigSectionRef, APIConfigSectionProps>(
-  ({ onChanged, onFocus, onBlur, onPress, onInputFocus, onInputBlur, onEditModeChange, hideDescription = false }, ref) => {
+  ({ onChanged, onFocus, onBlur, onPress, onInputFocus, onInputBlur, hideDescription = false }, ref) => {
     const { apiBaseUrl, setApiBaseUrl, remoteInputEnabled } = useSettingsStore();
     const { serverUrl } = useRemoteControlStore();
     const deviceType = useResponsiveLayout().deviceType;
     const isTV = deviceType === "tv";
 
-    const [isSectionFocused, setIsSectionFocused] = useState(false);
-    const [editing, setEditing] = useState(false);
+    const [isInputTargetFocused, setIsInputTargetFocused] = useState(false);
+    const [isInputFocused, setIsInputFocused] = useState(false);
     const inputRef = useRef<TextInput>(null);
-    const inputAnimationStyle = useButtonAnimation(isSectionFocused, 1.01);
+    const inputAnimationStyle = useButtonAnimation(isInputTargetFocused || isInputFocused, 1.01);
 
     const handleUrlChange = (url: string) => {
       setApiBaseUrl(url);
@@ -49,53 +47,20 @@ export const APIConfigSection = forwardRef<APIConfigSectionRef, APIConfigSection
     }));
 
     const handleSectionFocus = () => {
-      setIsSectionFocused(true);
       onFocus?.();
     };
 
-    const handleSectionBlur = () => {
-      setIsSectionFocused(false);
-      onBlur?.();
+    const focusInput = () => {
+      inputRef.current?.focus();
+      const end = apiBaseUrl.length;
+      inputRef.current?.setNativeProps({ selection: { start: end, end: end } });
+      onPress?.();
     };
-
-    const dismissEditing = () => {
-      inputRef.current?.blur();
-      Keyboard.dismiss();
-      setEditing(false);
-    };
-
-    const { editMode, enterEditMode } = useSectionEditMode({
-      deviceType,
-      itemCount: 1,
-      isSectionFocused,
-      isEditingTarget: editing,
-      onActivate: () => setEditing(true),
-      onDismissTarget: dismissEditing,
-      onEditModeChange,
-    });
-
-    // 激活后等一帧让 focusable=true 先生效，再程序聚焦弹键盘
-    useEffect(() => {
-      if (!editing) return;
-      const t = setTimeout(() => {
-        inputRef.current?.focus();
-        // 光标移到文本末尾
-        const end = apiBaseUrl.length;
-        inputRef.current?.setNativeProps({ selection: { start: end, end: end } });
-      }, 50);
-      return () => clearTimeout(t);
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [editing]);
 
     return (
       <SettingsSection
-        focusable
         onFocus={handleSectionFocus}
-        onBlur={handleSectionBlur}
-        onPress={() => {
-          enterEditMode();
-          onPress?.();
-        }}
+        onBlur={onBlur}
       >
         <View style={styles.inputContainer}>
           <View style={styles.titleContainer}>
@@ -105,35 +70,37 @@ export const APIConfigSection = forwardRef<APIConfigSectionRef, APIConfigSection
             )}
             {isTV && (
               <ThemedText style={styles.subtitle}>
-                {editMode ? "确认键编辑 · 返回键退出" : "按确认键进入编辑"}
+                聚焦输入框后按确认键编辑
               </ThemedText>
             )}
           </View>
-          <Animated.View style={inputAnimationStyle}>
-            <TextInput
-              ref={inputRef}
-              style={[
-                styles.input,
-                editing && styles.inputFocused,
-                isTV && editMode && !editing && styles.inputTarget,
-              ]}
-              value={apiBaseUrl}
-              onChangeText={handleUrlChange}
-              placeholder="输入服务器地址"
-              placeholderTextColor="#888"
-              autoCapitalize="none"
-              autoCorrect={false}
-              focusable={!isTV || editing}
-              onFocus={() => {
-                if (isTV) setEditing(true);
-                onInputFocus?.();
-              }}
-              onBlur={() => {
-                if (isTV) setEditing(false);
-                onInputBlur?.();
-              }}
-            />
-          </Animated.View>
+          <TouchableOpacity
+            activeOpacity={0.9}
+            onPress={focusInput}
+            onFocus={() => setIsInputTargetFocused(true)}
+            onBlur={() => setIsInputTargetFocused(false)}
+          >
+            <Animated.View style={inputAnimationStyle}>
+              <TextInput
+                ref={inputRef}
+                style={[styles.input, (isInputTargetFocused || isInputFocused) && styles.inputFocused]}
+                value={apiBaseUrl}
+                onChangeText={handleUrlChange}
+                placeholder="输入服务器地址"
+                placeholderTextColor="#888"
+                autoCapitalize="none"
+                autoCorrect={false}
+                onFocus={() => {
+                  setIsInputFocused(true);
+                  onInputFocus?.();
+                }}
+                onBlur={() => {
+                  setIsInputFocused(false);
+                  onInputBlur?.();
+                }}
+              />
+            </Animated.View>
+          </TouchableOpacity>
         </View>
       </SettingsSection>
     );
@@ -179,9 +146,5 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.8,
     shadowRadius: 10,
     elevation: 5,
-  },
-  // TV 编辑模式下的光标目标提示边框
-  inputTarget: {
-    borderColor: "rgba(255, 255, 255, 0.4)",
   },
 });

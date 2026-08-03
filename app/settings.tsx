@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
 import { View, StyleSheet, Alert, Platform } from "react-native";
-import { useTVEventHandler } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ThemedText } from "@/components/ThemedText";
 import { ThemedView } from "@/components/ThemedView";
@@ -49,17 +48,8 @@ export default function SettingsScreen() {
 
   const [hasChanges, setHasChanges] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [currentFocusIndex, setCurrentFocusIndex] = useState(0);
   const [currentSection, setCurrentSection] = useState<string | null>(null);
-  // True while a text input inside a section is being edited (IME open on TV).
-  // While editing we must not let the screen-level TV key handler move focus,
-  // otherwise pressing the D-pad closes the keyboard immediately.
-  const [isEditingInput, setIsEditingInput] = useState(false);
-  // True while a section is in TV edit mode (用户在模块内部上下选择/修改)，
-  // 此期间挂起屏幕级的上下导航，按键全部交给该模块
-  const [editingSection, setEditingSection] = useState(false);
 
-  const saveButtonRef = useRef<any>(null);
   const apiSectionRef = useRef<any>(null);
   const liveStreamSectionRef = useRef<any>(null);
 
@@ -114,10 +104,8 @@ export default function SettingsScreen() {
         <RemoteInputSection
           onChanged={markAsChanged}
           onFocus={() => {
-            setCurrentFocusIndex(0);
             setCurrentSection("remote");
           }}
-          onEditModeChange={setEditingSection}
         />
       ),
       key: "remote",
@@ -129,12 +117,8 @@ export default function SettingsScreen() {
           onChanged={markAsChanged}
           hideDescription={deviceType === "mobile"}
           onFocus={() => {
-            setCurrentFocusIndex(1);
             setCurrentSection("api");
           }}
-          onInputFocus={() => setIsEditingInput(true)}
-          onInputBlur={() => setIsEditingInput(false)}
-          onEditModeChange={setEditingSection}
         />
       ),
       key: "api",
@@ -145,12 +129,8 @@ export default function SettingsScreen() {
           ref={liveStreamSectionRef}
           onChanged={markAsChanged}
           onFocus={() => {
-            setCurrentFocusIndex(2);
             setCurrentSection("livestream");
           }}
-          onInputFocus={() => setIsEditingInput(true)}
-          onInputBlur={() => setIsEditingInput(false)}
-          onEditModeChange={setEditingSection}
         />
       ),
       key: "livestream",
@@ -160,10 +140,8 @@ export default function SettingsScreen() {
         <PlaybackSettingsSection
           onChanged={markAsChanged}
           onFocus={() => {
-            setCurrentFocusIndex(3);
             setCurrentSection("playback");
           }}
-          onEditModeChange={setEditingSection}
         />
       ),
       key: "playback",
@@ -172,10 +150,8 @@ export default function SettingsScreen() {
       component: (
         <SpeedTestSection
           onFocus={() => {
-            setCurrentFocusIndex(4);
             setCurrentSection("speedtest");
           }}
-          onEditModeChange={setEditingSection}
         />
       ),
       key: "speedtest",
@@ -187,33 +163,6 @@ export default function SettingsScreen() {
   ] as const; // 把每个对象都当作字面量保留
   /** 这里得到的 sections 已经是 SectionItem[]（没有 false） */
   const sections: SectionItem[] = rawSections.filter(isSectionItem);
-
-
-  // TV遥控器事件处理 - 仅在TV设备上启用
-  const handleTVEvent = React.useCallback(
-    (event: any) => {
-      if (deviceType !== "tv") return;
-      // While a text input is focused, let the IME handle D-pad events. Moving
-      // focus here (e.g. to the save button) would dismiss the keyboard before
-      // the user can finish typing. This is what caused the live-source input
-      // to "close immediately" when it was the last focusable section.
-      if (isEditingInput || editingSection) return;
-
-      if (event.eventType === "down") {
-        const nextIndex = Math.min(currentFocusIndex + 1, sections.length);
-        setCurrentFocusIndex(nextIndex);
-        if (nextIndex === sections.length) {
-          saveButtonRef.current?.focus();
-        }
-      } else if (event.eventType === "up") {
-        const prevIndex = Math.max(currentFocusIndex - 1, 0);
-        setCurrentFocusIndex(prevIndex);
-      }
-    },
-    [currentFocusIndex, sections.length, deviceType, isEditingInput, editingSection]
-  );
-
-  useTVEventHandler(deviceType === "tv" ? handleTVEvent : () => { });
 
   // 动态样式
   const dynamicStyles = createResponsiveStyles(deviceType, spacing, insets);

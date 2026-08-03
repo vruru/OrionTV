@@ -83,7 +83,7 @@ export const VideoSourceSection: React.FC<VideoSourceSectionProps> = ({ onChange
   };
 
   return (
-    <SettingsSection focusable onFocus={handleSectionFocus} onBlur={handleSectionBlur}>
+    <SettingsSection onFocus={handleSectionFocus} onBlur={handleSectionBlur}>
       <ThemedText style={styles.sectionTitle}>播放源配置</ThemedText>
 
       {resources.length > 0 && (

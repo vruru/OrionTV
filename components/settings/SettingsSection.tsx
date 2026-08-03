@@ -1,20 +1,16 @@
 import React, { useState } from "react";
-import { StyleSheet, Pressable, Platform } from "react-native";
+import { StyleSheet } from "react-native";
 import { ThemedView } from "@/components/ThemedView";
 import { Colors } from "@/constants/Colors";
-import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 
 interface SettingsSectionProps {
   children: React.ReactNode;
   onFocus?: () => void;
   onBlur?: () => void;
-  onPress?: () => void;
-  focusable?: boolean;
 }
 
-export const SettingsSection: React.FC<SettingsSectionProps> = ({ children, onFocus, onBlur, onPress, focusable = false }) => {
+export const SettingsSection: React.FC<SettingsSectionProps> = ({ children, onFocus, onBlur }) => {
   const [isFocused, setIsFocused] = useState(false);
-  const deviceType = useResponsiveLayout().deviceType;
 
   const handleFocus = () => {
     setIsFocused(true);
@@ -26,26 +22,20 @@ export const SettingsSection: React.FC<SettingsSectionProps> = ({ children, onFo
     onBlur?.();
   };
 
-  const handlePress = () => {
-    onPress?.();
-  }
-
-  if (!focusable) {
-    return <ThemedView style={styles.section}>{children}</ThemedView>;
-  }
-
+  // The section is deliberately presentation-only. Focus and blur events from
+  // its descendants bubble to this View, so the frame can still be highlighted
+  // without placing one large Pressable over every TextInput/Switch inside it.
+  // A focusable wrapper here intercepts touch events and traps Android TV focus.
   return (
-    <ThemedView style={[styles.section, isFocused && styles.sectionFocused]}>
-      <Pressable
-        android_ripple={Platform.isTV||deviceType !=='tv'? {color:'transparent'}:{color:Colors.dark.link}}
-        style={styles.sectionPressable}
-        // {...(Platform.isTV ? {onFocus: handleFocus, onBlur: handleBlur} : {onPress: onPress})}
-        onFocus={handleFocus}
-        onBlur={handleBlur}
-        onPress={handlePress}
-      >
-        {children}
-      </Pressable>
+    <ThemedView
+      style={[styles.section, isFocused && styles.sectionFocused]}
+      // react-native-tvos supports bubbling focus events on View at runtime;
+      // the 0.74 TypeScript ViewProps shipped by RN do not declare them yet.
+      // @ts-expect-error react-native-tvos View focus event
+      onFocus={handleFocus}
+      onBlur={handleBlur}
+    >
+      {children}
     </ThemedView>
   );
 };
@@ -61,8 +51,5 @@ const styles = StyleSheet.create({
   sectionFocused: {
     borderColor: Colors.dark.primary,
     backgroundColor: "#007AFF10",
-  },
-  sectionPressable: {
-    width: "100%",
   },
 });
