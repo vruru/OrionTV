@@ -17,6 +17,8 @@ on:
       - "metro.config.js"
       - ".github/**"
       - "**/*.md"
+  # 允许手动补发：修复配置类合并（如 projectId 迁移）被 paths-ignore 跳过时用
+  workflow_dispatch:
 
 jobs:
   update:
@@ -45,4 +47,4 @@ jobs:
       - name: Publish update
         run: eas update --channel production --message "$COMMIT_MSG" --non-interactive
         env:
-          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          COMMIT_MSG: ${{ github.event.head_commit.message || 'manual dispatch' }}
