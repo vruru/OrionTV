@@ -30,7 +30,18 @@ const FAVORITES_GROUP = "我的收藏";
 
 // Convert backend live channels into the local Channel shape.
 const mapChannels = (
-  chans: { id?: string; tvgId?: string; name?: string; url: string; logo?: string; group?: string }[],
+  chans: {
+    id?: string;
+    tvgId?: string;
+    tvgName?: string;
+    name?: string;
+    url: string;
+    logo?: string;
+    group?: string;
+    catchup?: string;
+    catchupSource?: string;
+    catchupDays?: string;
+  }[],
   fallbackGroup: string
 ): Channel[] =>
   chans
@@ -42,6 +53,10 @@ const mapChannels = (
       logo: c.logo || "",
       group: c.group || fallbackGroup || "Default",
       tvgId: c.tvgId,
+      tvgName: c.tvgName,
+      catchup: c.catchup,
+      catchupSource: c.catchupSource,
+      catchupDays: c.catchupDays,
     }));
 
 // 在 EPG 数据里找频道的节目单：按 tvg-id / tvg-name / 名称兜底匹配
@@ -189,25 +204,35 @@ export default function LiveScreen() {
     if (!isScreenFocused) return;
 
     const controller = new AbortController();
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    const loadEpg = async (allowRetry: boolean) => {
+      const wantedChannels = new Set<string>();
+      for (const channel of channels) {
+        if (channel.tvgId) wantedChannels.add(channel.tvgId);
+        if (channel.tvgName) wantedChannels.add(channel.tvgName);
+        wantedChannels.add(channel.name);
+      }
+      const data = await fetchEpg(epgUrl, wantedChannels, controller.signal);
+      if (controller.signal.aborted) return;
+      if (data) {
+        setEpgData(data);
+        const matchCount = channels.filter((channel) => findEpgProgrammes(data, channel).length > 0).length;
+        logger.info(`节目表匹配完成：${matchCount}/${channels.length} 个频道`);
+      } else if (allowRetry) {
+        // 局域网 EPG 服务刚好在重建文件或电视网络刚恢复时，自动补一次，避免本次
+        // 进入直播页后永久保持“无节目表”状态。
+        retryTimer = setTimeout(() => {
+          void loadEpg(false);
+        }, 5000);
+      }
+    };
     // 先让播放器建立连接并显示首帧，避免 EPG 下载/解析和首帧初始化同时争抢 JS 线程。
     const timer = setTimeout(() => {
-      void (async () => {
-        const wantedChannels = new Set<string>();
-        for (const channel of channels) {
-          if (channel.tvgId) wantedChannels.add(channel.tvgId);
-          if (channel.tvgName) wantedChannels.add(channel.tvgName);
-          wantedChannels.add(channel.name);
-        }
-        const data = await fetchEpg(epgUrl, wantedChannels, controller.signal);
-        if (!controller.signal.aborted) {
-          setEpgData(data);
-          const supportCount = channels.filter((c) => !!c.catchupSource).length;
-          logger.info(`回看能力探测：${supportCount}/${channels.length} 个频道声明了 catchup-source`);
-        }
-      })();
+      void loadEpg(true);
     }, 1500);
     return () => {
       clearTimeout(timer);
+      if (retryTimer) clearTimeout(retryTimer);
       controller.abort();
     };
   }, [epgUrl, channels, isScreenFocused]);
@@ -351,7 +376,7 @@ export default function LiveScreen() {
     return prog ? `${channel.name} · ${prog.title}（${formatProgrammeTime(prog)}）` : channel.name;
   };
 
-  // 回看：目标频道的完整节目单（EPG 含 54h 回溯窗口）；无 EPG 时用录制时段块兜底
+  // 节目表面板的完整节目单（EPG 含 54h 回溯窗口）；录制频道无 EPG 时用时段块兜底
   const replayProgrammes = useMemo<EpgProgramme[]>(() => {
     if (!replayChannel) return [];
     if (replayBlocks) return replayBlocks;
@@ -427,23 +452,27 @@ export default function LiveScreen() {
     openReplayWithList(channel, list, true);
   };
 
-  // 频道表里菜单键打开回看面板：有 EPG 用节目单，没有则按录制时段回看
-  const openReplayList = (channel: Channel) => {
-    const serverUrl = useSettingsStore.getState().replayServerUrl;
-    if (!serverUrl) {
-      Toast.show({ type: "info", text1: "未配置回看服务", text2: "请在设置-直播源中填写回看服务地址" });
-      return;
-    }
-    if (!recordedChannelsRef.current.has(channel.name)) {
-      Toast.show({ type: "info", text1: "该频道未开启录制回看" });
-      return;
-    }
+  // 频道表里菜单键打开节目表。EPG 与回看是两种独立能力：
+  // 有 EPG 的频道即使没有录像也必须能查看节目表；只有确认播放历史节目时才检查回看。
+  const openProgrammeGuide = (channel: Channel) => {
     const list = findEpgProgrammes(epgDataRef.current, channel);
-    if (list.length === 0) {
+    if (list.length > 0) {
+      openReplayWithList(channel, list, false);
+      return;
+    }
+
+    const serverUrl = useSettingsStore.getState().replayServerUrl;
+    if (serverUrl && recordedChannelsRef.current.has(channel.name)) {
       void openReplayByTimeBlocks(channel, serverUrl);
       return;
     }
-    openReplayWithList(channel, list, false);
+
+    const configuredEpgUrl = useSettingsStore.getState().epgUrl;
+    Toast.show({
+      type: "info",
+      text1: epgDataRef.current ? "该频道暂无节目表" : configuredEpgUrl ? "节目表尚未加载完成" : "未配置节目表地址",
+      text2: configuredEpgUrl && !epgDataRef.current ? "请稍后再按菜单键重试" : undefined,
+    });
   };
 
   // 面板左右键：切换日期；光标落在当日第一个未播完节目，否则当日最后一个
@@ -493,7 +522,11 @@ export default function LiveScreen() {
   const playReplay = (prog: EpgProgramme, list?: EpgProgramme[], index?: number) => {
     const channel = replayChannelRef.current;
     const serverUrl = useSettingsStore.getState().replayServerUrl;
-    if (!channel || !serverUrl) return;
+    if (!channel) return;
+    if (!serverUrl || !recordedChannelsRef.current.has(channel.name)) {
+      Toast.show({ type: "info", text1: "该频道未开启回看", text2: "节目表仍可正常查看" });
+      return;
+    }
     if (prog.stop > Date.now()) {
       Toast.show({ type: "info", text1: "节目尚未播完，暂不可回看" });
       return;
@@ -779,7 +812,7 @@ export default function LiveScreen() {
         else if (type === "menu" || type === "contextMenu") {
           // 回看播放中按菜单键：直接打开该频道的节目单（方便接着选下一集）
           const sess = replaySessionRef.current;
-          if (sess) openReplayList(sess.channel);
+          if (sess) openProgrammeGuide(sess.channel);
         }
         else if ((type === "select" || type === "playPause") && playbackFailedRef.current) {
           setRetryKey((k) => k + 1);
@@ -805,9 +838,9 @@ export default function LiveScreen() {
         }
         case "menu":
         case "contextMenu": {
-          // TV 端：菜单键打开光标所在频道的回看节目单
+          // TV 端：菜单键打开光标所在频道的节目表（回看能力另行判断）
           const ch = groupListRef.current[cursorRef.current];
-          if (ch) openReplayList(ch);
+          if (ch) openProgrammeGuide(ch);
           break;
         }
         case "up":
@@ -856,11 +889,10 @@ export default function LiveScreen() {
   const renderLiveContent = () => (
     <>
       {isScreenFocused ? (
+        // 回看状态与节目名已经在右上角常驻显示，左上角不再重复显示回看标题。
         <LivePlayer
           streamUrl={replaySession ? replaySession.url : selectedChannelUrl}
-          channelTitle={
-            replaySession ? `回看 · ${replaySession.channelName} · ${replaySession.title}` : channelTitle
-          }
+          channelTitle={replaySession ? null : channelTitle}
           onPlaybackStatusUpdate={() => {}}
           retryKey={retryKey}
           onPlaybackError={setPlaybackFailed}
@@ -997,9 +1029,9 @@ export default function LiveScreen() {
                               isCursor && styles.rowActive,
                             ]}
                           >
-                            {/* 左边固定槽位：能回看的频道才有「回看」标，无标时占位对齐 */}
+                            {/* 左边固定槽位：NAS 确认有录像的频道才显示「回看」标 */}
                             <View style={styles.badgeSlotLeft}>
-                              {item.catchupSource || recordedChannels.has(item.name) ? (
+                              {replayServerUrl && recordedChannels.has(item.name) ? (
                                 <Text style={styles.catchupBadge}>回看</Text>
                               ) : null}
                             </View>
@@ -1015,9 +1047,9 @@ export default function LiveScreen() {
                             >
                               {item.name || "未知频道"}
                             </Text>
-                            {/* 右边固定位置：有 EPG 节目单的频道显示「节目单」标 */}
+                            {/* 右边固定位置：有 EPG 节目表的频道显示「节目表」标 */}
                             {epgChannelNames.has(item.name) ? (
-                              <Text style={styles.epgBadge}>节目单</Text>
+                              <Text style={styles.epgBadge}>节目表</Text>
                             ) : null}
                           </View>
                         </Pressable>
@@ -1028,12 +1060,12 @@ export default function LiveScreen() {
               </View>
             </View>
             <Text style={[styles.replayHint, { marginTop: 8, marginBottom: 0 }]}>
-              {deviceType === "tv" ? "确认键播放 · 菜单键打开回看 · 长按确认键收藏" : "点按播放 · 长按收藏"}
+              {deviceType === "tv" ? "确认键播放 · 菜单键打开节目表 · 长按确认键收藏" : "点按播放 · 长按收藏"}
             </Text>
           </View>
         </View>
       </Modal>
-      {/* 回看节目单：频道表里按菜单键打开；上下选择、确认回看已播节目、菜单/返回关闭 */}
+      {/* 节目表：频道表里按菜单键打开；有录像的频道才允许确认回看已播节目 */}
       <Modal
         animationType="slide"
         transparent={true}
@@ -1049,7 +1081,11 @@ export default function LiveScreen() {
                 ? `${replayChannel.name} · ${replayDates[replayDateIdx] ? replayDayLabel(replayDates[replayDateIdx]) : "节目单"}`
                 : ""}
             </Text>
-            <Text style={styles.replayHint}>左右键切换日期 · 确认键回看 · 菜单键/返回键关闭</Text>
+            <Text style={styles.replayHint}>
+              {replayChannel && replayServerUrl && recordedChannels.has(replayChannel.name)
+                ? "左右键切换日期 · 确认键回看已播节目 · 菜单键/返回键关闭"
+                : "左右键切换日期 · 该频道仅提供节目表 · 菜单键/返回键关闭"}
+            </Text>
             <FlashList
               ref={replayListRef}
               data={replayDayList}

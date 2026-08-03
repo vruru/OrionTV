@@ -2,9 +2,11 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 // region: --- Interface Definitions ---
 export interface DoubanItem {
+  id?: string;
   title: string;
   poster: string;
   rate?: string;
+  year?: string;
 }
 
 export interface DoubanResponse {
@@ -89,10 +91,14 @@ export interface LiveSource {
 export interface LiveChannel {
   id: string;
   tvgId?: string;
+  tvgName?: string;
   name: string;
   logo?: string;
   group?: string;
   url: string;
+  catchup?: string;
+  catchupSource?: string;
+  catchupDays?: string;
 }
 
 // Storage key for saved login credentials (kept in sync with services/storage.ts).
@@ -314,6 +320,84 @@ export class API {
     const url = `/api/douban?type=${type}&tag=${encodeURIComponent(tag)}&pageSize=${pageSize}&pageStart=${pageStart}`;
     const response = await this._fetch(url);
     return response.json();
+  }
+
+  /** LunaTV 网页端“电视剧/综艺”的最近热门分类接口。 */
+  async getDoubanCategoryData(
+    kind: "movie" | "tv",
+    category: string,
+    categoryType: string,
+    pageSize: number = 20,
+    pageStart: number = 0
+  ): Promise<DoubanResponse> {
+    const url =
+      `/api/douban/categories?kind=${kind}` +
+      `&category=${encodeURIComponent(category)}` +
+      `&type=${encodeURIComponent(categoryType)}` +
+      `&limit=${pageSize}&start=${pageStart}`;
+    const response = await this._fetch(url);
+    return response.json();
+  }
+
+  /** LunaTV 网页端“全部/卡通”使用的多条件推荐接口。 */
+  async getDoubanRecommendData(
+    params: {
+      kind: "movie" | "tv";
+      category?: string;
+      format?: string;
+      label?: string;
+      region?: string;
+      year?: string;
+      platform?: string;
+      sort?: string;
+    },
+    pageSize: number = 20,
+    pageStart: number = 0
+  ): Promise<DoubanResponse> {
+    const query = [
+      `kind=${params.kind}`,
+      `limit=${pageSize}`,
+      `start=${pageStart}`,
+      ...Object.entries(params)
+        .filter(([key, value]) => key !== "kind" && !!value)
+        .map(([key, value]) => `${key}=${encodeURIComponent(value!)}`),
+    ].join("&");
+    const response = await this._fetch(`/api/douban/recommends?${query}`);
+    return response.json();
+  }
+
+  /** 网页端“每日放送”的 Bangumi 日历，转换成首页卡片通用结构。 */
+  async getBangumiToday(): Promise<DoubanResponse> {
+    const response = await this._fetch("/api/bangumi/calendar");
+    const calendar = (await response.json()) as Array<{
+      weekday?: { en?: string };
+      items?: Array<{
+        id?: number;
+        name?: string;
+        name_cn?: string;
+        air_date?: string;
+        rating?: { score?: number };
+        images?: { large?: string; common?: string; medium?: string; small?: string; grid?: string };
+      }>;
+    }>;
+    const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const today = calendar.find((day) => day.weekday?.en === weekdays[new Date().getDay()]);
+    const list: DoubanItem[] = (today?.items ?? [])
+      .filter((item) => !!item.images)
+      .map((item) => ({
+        id: item.id?.toString(),
+        title: item.name_cn || item.name || "未知动画",
+        poster:
+          item.images?.large ||
+          item.images?.common ||
+          item.images?.medium ||
+          item.images?.small ||
+          item.images?.grid ||
+          "",
+        rate: item.rating?.score?.toFixed(1) || "",
+        year: item.air_date?.split("-")[0] || "",
+      }));
+    return { code: 200, message: "获取成功", list };
   }
 
   async searchVideos(query: string): Promise<{ results: SearchResult[] }> {

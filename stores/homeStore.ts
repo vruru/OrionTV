@@ -23,36 +23,120 @@ export interface Category {
   title: string;
   type?: "movie" | "tv" | "record";
   tag?: string;
-  tags?: string[];
+  tags?: CategoryTag[];
+  query?: CategoryQuery;
 }
 
-const initialCategories: Category[] = [
+export type CategoryQuery =
+  | { mode: "list"; type: "movie" | "tv"; tag: string }
+  | { mode: "categories"; kind: "movie" | "tv"; category: string; categoryType: string }
+  | {
+      mode: "recommends";
+      kind: "movie" | "tv";
+      category?: string;
+      format?: string;
+      label?: string;
+      region?: string;
+      year?: string;
+      platform?: string;
+      sort?: string;
+    }
+  | { mode: "calendar" };
+
+export interface CategoryTag {
+  label: string;
+  value: string;
+  query: CategoryQuery;
+}
+
+const listTag = (label: string, type: "movie" | "tv", tag: string = label): CategoryTag => ({
+  label,
+  value: tag,
+  query: { mode: "list", type, tag },
+});
+
+const recentTag = (label: string, category: "tv" | "show", categoryType: string): CategoryTag => ({
+  label,
+  value: categoryType,
+  query: { mode: "categories", kind: "tv", category, categoryType },
+});
+
+const animeTag = (
+  label: string,
+  value: string,
+  query: Extract<CategoryQuery, { mode: "recommends" | "calendar" }>
+): CategoryTag => ({ label, value, query });
+
+export const initialCategories: Category[] = [
   { title: "最近播放", type: "record" },
-  { title: "热门剧集", type: "tv", tag: "热门" },
-  { title: "电视剧", type: "tv", tags: ["国产剧", "美剧", "英剧", "韩剧", "日剧", "港剧", "日本动画", "动画"] },
+  { title: "热门剧集", type: "tv", tag: "热门", query: { mode: "list", type: "tv", tag: "热门" } },
+  {
+    title: "电视剧",
+    type: "tv",
+    tags: [
+      recentTag("全部", "tv", "tv"),
+      recentTag("国产", "tv", "tv_domestic"),
+      recentTag("欧美", "tv", "tv_american"),
+      recentTag("日本", "tv", "tv_japanese"),
+      recentTag("韩国", "tv", "tv_korean"),
+      recentTag("动漫", "tv", "tv_animation"),
+      recentTag("纪录片", "tv", "tv_documentary"),
+    ],
+  },
   {
     title: "电影",
     type: "movie",
     tags: [
-      "热门",
-      "最新",
-      "经典",
-      "豆瓣高分",
-      "冷门佳片",
-      "华语",
-      "欧美",
-      "韩国",
-      "日本",
-      "动作",
-      "喜剧",
-      "爱情",
-      "科幻",
-      "悬疑",
-      "恐怖",
+      listTag("热门", "movie"),
+      listTag("最新", "movie"),
+      listTag("经典", "movie"),
+      listTag("豆瓣高分", "movie"),
+      listTag("冷门佳片", "movie"),
+      listTag("华语", "movie"),
+      listTag("欧美", "movie"),
+      listTag("韩国", "movie"),
+      listTag("日本", "movie"),
+      listTag("动作", "movie"),
+      listTag("喜剧", "movie"),
+      listTag("爱情", "movie"),
+      listTag("科幻", "movie"),
+      listTag("悬疑", "movie"),
+      listTag("恐怖", "movie"),
     ],
   },
-  { title: "综艺", type: "tv", tag: "综艺" },
-  { title: "豆瓣 Top250", type: "movie", tag: "top250" },
+  {
+    title: "综艺",
+    type: "tv",
+    tags: [
+      recentTag("全部", "show", "show"),
+      recentTag("国内", "show", "show_domestic"),
+      recentTag("国外", "show", "show_foreign"),
+    ],
+  },
+  {
+    title: "卡通",
+    type: "tv",
+    tags: [
+      animeTag("每日放送", "calendar", { mode: "calendar" }),
+      animeTag("番剧", "anime_tv", { mode: "recommends", kind: "tv", category: "动画", format: "电视剧" }),
+      animeTag("剧场版", "anime_movie", { mode: "recommends", kind: "movie", category: "动画" }),
+      // recommends 接口接收的是网页选择器显示的中文标签，而不是组件内部的英文 value。
+      animeTag("国漫", "chinese_anime", { mode: "recommends", kind: "tv", category: "动画", format: "电视剧", label: "国漫" }),
+      animeTag("日本", "japanese", { mode: "recommends", kind: "tv", category: "动画", format: "电视剧", region: "日本" }),
+      animeTag("欧美", "western", { mode: "recommends", kind: "tv", category: "动画", format: "电视剧", region: "欧美" }),
+      animeTag("韩国", "korean", { mode: "recommends", kind: "tv", category: "动画", format: "电视剧", region: "韩国" }),
+      animeTag("儿童", "children", { mode: "recommends", kind: "tv", category: "动画", format: "电视剧", label: "儿童" }),
+      animeTag("治愈", "healing", { mode: "recommends", kind: "tv", category: "动画", format: "电视剧", label: "治愈" }),
+      animeTag("科幻", "sci_fi", { mode: "recommends", kind: "tv", category: "动画", format: "电视剧", label: "科幻" }),
+      animeTag("魔幻", "fantasy", { mode: "recommends", kind: "tv", category: "动画", format: "电视剧", label: "魔幻" }),
+      animeTag("运动", "sports", { mode: "recommends", kind: "tv", category: "动画", format: "电视剧", label: "运动" }),
+      animeTag("恋爱", "love", { mode: "recommends", kind: "tv", category: "动画", format: "电视剧", label: "恋爱" }),
+      animeTag("悬疑", "suspense", { mode: "recommends", kind: "tv", category: "动画", format: "电视剧", label: "悬疑" }),
+      animeTag("励志", "inspirational", { mode: "recommends", kind: "tv", category: "动画", format: "电视剧", label: "励志" }),
+      animeTag("历史", "history", { mode: "recommends", kind: "tv", category: "动画", format: "电视剧", label: "历史" }),
+    ],
+  },
+  { title: "豆瓣 Top250", type: "movie", tag: "top250", query: { mode: "list", type: "movie", tag: "top250" } },
 ];
 
 // 添加缓存项接口
@@ -171,17 +255,22 @@ const useHomeStore = create<HomeState>((set, get) => ({
           .sort((a, b) => (b.lastPlayed || 0) - (a.lastPlayed || 0));
 
         set({ contentData: rowItems, hasMore: false });
-      } else if (selectedCategory.type && selectedCategory.tag) {
-        const result = await api.getDoubanData(
-          selectedCategory.type,
-          selectedCategory.tag,
-          20,
-          pageStart
-        );
+      } else if (selectedCategory.type && selectedCategory.tag && selectedCategory.query) {
+        const query = selectedCategory.query;
+        const result =
+          query.mode === "list"
+            ? await api.getDoubanData(query.type, query.tag, 20, pageStart)
+            : query.mode === "categories"
+              ? await api.getDoubanCategoryData(query.kind, query.category, query.categoryType, 20, pageStart)
+              : query.mode === "recommends"
+                ? await api.getDoubanRecommendData(query, 20, pageStart)
+                : pageStart === 0
+                  ? await api.getBangumiToday()
+                  : { code: 200, message: "已加载全部", list: [] };
 
         const newItems = result.list.map((item) => ({
           ...item,
-          id: item.title,
+          id: item.id || item.title,
           source: "douban",
         })) as RowItem[];
 

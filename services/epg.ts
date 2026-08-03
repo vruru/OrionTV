@@ -275,6 +275,9 @@ export const fetchEpg = async (
   const abortFromCaller = () => controller.abort();
   signal?.addEventListener('abort', abortFromCaller, { once: true });
   try {
+    // 网络下载需要超时保护，但本地解析不能共用这个计时器。低性能电视会主动
+    // 分片让出 JS 线程，解析可能超过 20 秒；此前会因此把已经下载好的 EPG
+    // 自己中止，最终表现为所有频道都没有“节目表”标志。
     const timer = setTimeout(() => controller.abort(), 20_000);
     try {
       const response = await fetch(epgUrl, { signal: controller.signal });
@@ -282,6 +285,7 @@ export const fetchEpg = async (
         throw new Error(`HTTP ${response.status}`);
       }
       const text = await response.text();
+      clearTimeout(timer);
       if (text.length > MAX_EPG_BYTES) {
         logger.info(`EPG 文件过大（${(text.length / 1024 / 1024).toFixed(1)}MB），放弃解析`);
         return null;

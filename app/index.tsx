@@ -8,7 +8,7 @@ import VideoCard from "@/components/VideoCard";
 import { useFocusEffect, useRouter } from "expo-router";
 import { Search, Settings, LogOut, Heart } from "lucide-react-native";
 import { StyledButton } from "@/components/StyledButton";
-import useHomeStore, { RowItem, Category } from "@/stores/homeStore";
+import useHomeStore, { RowItem, Category, CategoryTag } from "@/stores/homeStore";
 import useAuthStore from "@/stores/authStore";
 import CustomScrollView from "@/components/CustomScrollView";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
@@ -93,8 +93,8 @@ export default function HomeScreen() {
     // 如果是容器分类且没有选择标签，设置默认标签
     if (selectedCategory.tags && !selectedCategory.tag) {
       const defaultTag = selectedCategory.tags[0];
-      setSelectedTag(defaultTag);
-      selectCategory({ ...selectedCategory, tag: defaultTag });
+      setSelectedTag(defaultTag.value);
+      selectCategory({ ...selectedCategory, tag: defaultTag.value, query: defaultTag.query });
       return;
     }
 
@@ -142,10 +142,10 @@ export default function HomeScreen() {
     selectCategory(category);
   };
 
-  const handleTagSelect = (tag: string) => {
-    setSelectedTag(tag);
+  const handleTagSelect = (tag: CategoryTag) => {
+    setSelectedTag(tag.value);
     if (selectedCategory) {
-      const categoryWithTag = { ...selectedCategory, tag: tag };
+      const categoryWithTag = { ...selectedCategory, tag: tag.value, query: tag.query };
       selectCategory(categoryWithTag);
     }
   };
@@ -303,11 +303,11 @@ export default function HomeScreen() {
           <FlatList
             data={selectedCategory.tags}
             renderItem={({ item, index }) => {
-              const isSelected = selectedTag === item;
+              const isSelected = selectedTag === item.value;
               return (
                 <StyledButton
                   hasTVPreferredFocus={index === 0}
-                  text={item}
+                  text={item.label}
                   onPress={() => handleTagSelect(item)}
                   isSelected={isSelected}
                   style={dynamicStyles.categoryButton}
@@ -316,7 +316,7 @@ export default function HomeScreen() {
                 />
               );
             }}
-            keyExtractor={(item) => item}
+            keyExtractor={(item) => item.value}
             horizontal
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={dynamicStyles.categoryListContent}
