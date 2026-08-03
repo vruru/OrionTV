@@ -13,6 +13,7 @@ import useLiveFavoritesStore from "@/stores/liveFavoritesStore";
 import { useRemoteControlStore } from "@/stores/remoteControlStore";
 import { RemoteControlModal } from "@/components/RemoteControlModal";
 import { matchChannelSearch } from "@/utils/pinyin";
+import { nextResizeMode, RESIZE_MODE_LABELS } from "@/utils/resizeMode";
 import { EpgData, fetchEpg, getCurrentProgramme, buildEpgKeys, formatProgrammeTime } from "@/services/epg";
 import Logger from "@/utils/Logger";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
@@ -65,6 +66,11 @@ export default function LiveScreen() {
   const [searchKeyword, setSearchKeyword] = useState("");
   const [isSearchFocused, setIsSearchFocused] = useState(false);
   const searchInputRef = useRef<TextInput>(null);
+  // 播放失败状态（含 LivePlayer 15s 超时）与重试计数
+  const [playbackFailed, setPlaybackFailed] = useState(false);
+  const [retryKey, setRetryKey] = useState(0);
+  const playbackFailedRef = useRef(false);
+  playbackFailedRef.current = playbackFailed;
   // Self-managed cursor within the current group's channel list (like TiviMate
   // etc.): we don't rely on the OS focus engine to move through the list.
   const [listSelectedIndex, setListSelectedIndex] = useState(0);
@@ -265,6 +271,14 @@ export default function LiveScreen() {
     showRemoteModal("live");
   };
 
+  // TV 播放界面按上键：循环切换画面比例（getState 避免闭包拿到旧值）
+  const cycleResizeModeWithToast = () => {
+    const { videoResizeMode, setVideoResizeMode } = useSettingsStore.getState();
+    const next = nextResizeMode(videoResizeMode);
+    setVideoResizeMode(next);
+    Toast.show({ type: "info", text1: `画面比例：${RESIZE_MODE_LABELS[next]}` });
+  };
+
   const scrollToRow = (index: number, center = true) => {
     try {
       channelListRef.current?.scrollToIndex({ index, animated: false, viewPosition: center ? 0.5 : 0 });
@@ -388,10 +402,15 @@ export default function LiveScreen() {
       const action = (event as any)?.eventKeyAction;
 
       if (!isChannelListVisible) {
-        // 播放器界面：左右换台，下键打开节目表
+        // 播放器界面：左右换台，下键打开节目表，上键切换画面比例，
+        // 加载失败时确认键重试当前流
         if (type === "down") setIsChannelListVisible(true);
         else if (type === "left") changeChannel("prev");
         else if (type === "right") changeChannel("next");
+        else if (type === "up") cycleResizeModeWithToast();
+        else if ((type === "select" || type === "playPause") && playbackFailedRef.current) {
+          setRetryKey((k) => k + 1);
+        }
         return;
       }
 
@@ -458,7 +477,13 @@ export default function LiveScreen() {
         streamUrl={selectedChannelUrl}
         channelTitle={channelTitle}
         onPlaybackStatusUpdate={() => {}}
+        retryKey={retryKey}
+        onPlaybackError={setPlaybackFailed}
       />
+      {/* 移动端/平板：加载失败时点按重试（TV 端走确认键） */}
+      {playbackFailed && deviceType !== "tv" && (
+        <Pressable style={styles.retryTouchOverlay} onPress={() => setRetryKey((k) => k + 1)} />
+      )}
       {isLoading && channels.length === 0 && (
         <View style={styles.centerOverlay} pointerEvents="none">
           <ActivityIndicator size="large" color="#fff" />
@@ -636,6 +661,9 @@ const styles = StyleSheet.create({
     width: 1,
     height: 1,
     opacity: 0,
+  },
+  retryTouchOverlay: {
+    ...StyleSheet.absoluteFillObject,
   },
   rowActive: {
     backgroundColor: Colors.dark.primary,

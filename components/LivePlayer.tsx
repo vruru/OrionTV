@@ -1,21 +1,29 @@
 import React, { useRef, useState, useEffect } from "react";
 import { View, StyleSheet, Text, ActivityIndicator } from "react-native";
-import { Video, ResizeMode, AVPlaybackStatus } from "expo-av";
+import { Video, AVPlaybackStatus } from "expo-av";
 import { useKeepAwake } from "expo-keep-awake";
+import { useSettingsStore } from "@/stores/settingsStore";
+import { toAvResizeMode } from "@/utils/resizeMode";
 
 interface LivePlayerProps {
   streamUrl: string | null;
   channelTitle?: string | null;
   onPlaybackStatusUpdate: (status: AVPlaybackStatus) => void;
+  /** 自增即重试：外部（TV 确认键/移动端点按）触发重新加载当前流 */
+  retryKey?: number;
+  /** 加载失败/恢复时上报（含 15s 超时路径），供外部决定确认键行为 */
+  onPlaybackError?: (failed: boolean) => void;
 }
 
 const PLAYBACK_TIMEOUT = 15000; // 15 seconds
 
-export default function LivePlayer({ streamUrl, channelTitle, onPlaybackStatusUpdate }: LivePlayerProps) {
+export default function LivePlayer({ streamUrl, channelTitle, onPlaybackStatusUpdate, retryKey = 0, onPlaybackError }: LivePlayerProps) {
   const video = useRef<Video>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isTimeout, setIsTimeout] = useState(false);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // 全局画面比例设置（设置页 / TV 上键快捷切换即时生效）
+  const videoResizeMode = useSettingsStore((s) => s.videoResizeMode);
   useKeepAwake();
 
   useEffect(() => {
@@ -40,7 +48,13 @@ export default function LivePlayer({ streamUrl, channelTitle, onPlaybackStatusUp
         clearTimeout(timeoutRef.current);
       }
     };
-  }, [streamUrl]);
+    // retryKey 变化时重走加载流程（Video 以 key 强制重挂载）
+  }, [streamUrl, retryKey]);
+
+  // 失败状态变化（含超时路径）统一上报外部
+  useEffect(() => {
+    onPlaybackError?.(isTimeout);
+  }, [isTimeout, onPlaybackError]);
 
   const handlePlaybackStatusUpdate = (status: AVPlaybackStatus) => {
     if (status.isLoaded) {
@@ -77,6 +91,7 @@ export default function LivePlayer({ streamUrl, channelTitle, onPlaybackStatusUp
     return (
       <View style={styles.container}>
         <Text style={styles.messageText}>加载失败，请重试</Text>
+        <Text style={styles.retryHintText}>按确认键或点按屏幕重试</Text>
       </View>
     );
   }
@@ -84,12 +99,13 @@ export default function LivePlayer({ streamUrl, channelTitle, onPlaybackStatusUp
   return (
     <View style={styles.container}>
       <Video
+        key={`${streamUrl}-${retryKey}`}
         ref={video}
         style={styles.video}
         source={{
           uri: streamUrl,
         }}
-        resizeMode={ResizeMode.CONTAIN}
+        resizeMode={toAvResizeMode(videoResizeMode)}
         shouldPlay
         onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
         onError={(e) => {
@@ -139,6 +155,11 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 16,
     marginTop: 10,
+  },
+  retryHintText: {
+    color: "#aaa",
+    fontSize: 13,
+    marginTop: 8,
   },
   loadingOverlay: {
     ...StyleSheet.absoluteFillObject,
