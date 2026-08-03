@@ -690,12 +690,12 @@ export default function LiveScreen() {
         retryKey={retryKey}
         onPlaybackError={setPlaybackFailed}
       />
-      {/* 回看播放中：左上角常驻标志，避免误以为在看直播 */}
+      {/* 回看播放中：右上角常驻水印式标志（镂空透明，不挡画面与台标位） */}
       {replaySession && (
         <View style={styles.replayOverlay} pointerEvents="none">
           <Text style={styles.replayOverlayBadge}>回看</Text>
           <Text style={styles.replayOverlayText} numberOfLines={1}>
-            {`${replaySession.channelName} · ${replaySession.title}`}
+            {replaySession.title}
           </Text>
         </View>
       )}
@@ -1021,31 +1021,32 @@ const styles = StyleSheet.create({
   replayOverlay: {
     position: "absolute",
     top: 24,
-    left: 24,
-    flexDirection: "row",
+    right: 24,
     alignItems: "center",
-    backgroundColor: "rgba(0, 0, 0, 0.55)",
-    borderRadius: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    maxWidth: "60%",
+    maxWidth: "40%",
   },
   replayOverlayBadge: {
     color: "#9ec9ff",
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: "bold",
     borderWidth: 1,
     borderColor: "rgba(158, 201, 255, 0.6)",
     borderRadius: 4,
-    paddingHorizontal: 4,
+    paddingHorizontal: 5,
     paddingVertical: 1,
-    marginRight: 8,
+    marginBottom: 4,
     overflow: "hidden",
+    textShadowColor: "rgba(0, 0, 0, 0.8)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
   },
   replayOverlayText: {
     color: "#eee",
-    fontSize: 13,
-    flexShrink: 1,
+    fontSize: 12,
+    textAlign: "center",
+    textShadowColor: "rgba(0, 0, 0, 0.8)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
   },
 });
 
