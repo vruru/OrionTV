@@ -44,17 +44,40 @@ export const speedColor = (mbps: number): string => {
 /**
  * Sort sources by measured speed (fastest first) and keep only the top `limit`.
  * Sources without a measured speed are treated as slowest so they sort last.
+ *
+ * Two safeguards:
+ * - When NO source has any measurement (the user never ran the speed test),
+ *   the full original list is returned — otherwise "top N" would degrade to
+ *   "first N" and silently hide every source after position 5.
+ * - `alwaysKeepSource` (typically the currently playing source) is forced into
+ *   the result so the active source never disappears from the picker.
  */
 export const sortAndLimitBySpeed = <T extends { source: string }>(
   sources: T[],
   speedMap: Record<string, { mbps: number }>,
-  limit = 5
+  limit = 5,
+  alwaysKeepSource?: string
 ): T[] => {
+  const hasAnyMeasurement = sources.some((s) => speedMap[s.source]);
+  if (!hasAnyMeasurement) return sources;
+
   const decorated = sources.map((s, index) => ({
     s,
     index,
     mbps: speedMap[s.source] ? speedMap[s.source].mbps : -1,
   }));
   decorated.sort((a, b) => (b.mbps !== a.mbps ? b.mbps - a.mbps : a.index - b.index));
-  return decorated.slice(0, limit).map((d) => d.s);
+  const top = decorated.slice(0, limit).map((d) => d.s);
+
+  if (alwaysKeepSource && !top.some((s) => s.source === alwaysKeepSource)) {
+    const current = sources.find((s) => s.source === alwaysKeepSource);
+    if (current) {
+      if (top.length >= limit && top.length > 0) {
+        top[top.length - 1] = current;
+      } else {
+        top.push(current);
+      }
+    }
+  }
+  return top;
 };

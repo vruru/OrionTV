@@ -16,8 +16,14 @@ export const SourceSelectionModal: React.FC = () => {
   const hdSourcesOnly = useSettingsStore((s) => s.hdSourcesOnly);
   const speedResults = useSpeedTestStore((s) => s.results);
 
-  // Hide sub-1080p sources, then keep the fastest 5 by measured speed.
-  const displaySources = sortAndLimitBySpeed(filterHdSources(searchResults, hdSourcesOnly), speedResults, 5);
+  // Hide sub-1080p sources, then keep the fastest 5 by measured speed. When no
+  // speed data exists the full list is shown; the active source is always kept.
+  const displaySources = sortAndLimitBySpeed(
+    filterHdSources(searchResults, hdSourcesOnly),
+    speedResults,
+    5,
+    detail?.source
+  );
 
   const onSelectSource = (item: SearchResultWithResolution) => {
     logger.debug("onSelectSource", item.source, detail?.source);
