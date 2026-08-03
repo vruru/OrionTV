@@ -132,6 +132,23 @@ describe("epg", () => {
       expect([...asyncData.programmesByChannel]).toEqual([...syncData.programmesByChannel]);
     });
 
+    it("电视视频画面暂停帧回调时异步解析仍应完成", async () => {
+      const originalRequestAnimationFrame = global.requestAnimationFrame;
+      global.requestAnimationFrame = jest.fn(() => 1);
+      const manyChannels = `<tv>${Array.from(
+        { length: 101 },
+        (_, index) => `<channel id="channel-${index}"><display-name>频道 ${index}</display-name></channel>`
+      ).join("")}</tv>`;
+
+      try {
+        const data = await parseEpgXmlAsync(manyChannels, undefined, NOW);
+        expect(data.channelDisplayNames.size).toBe(101);
+        expect(global.requestAnimationFrame).not.toHaveBeenCalled();
+      } finally {
+        global.requestAnimationFrame = originalRequestAnimationFrame;
+      }
+    });
+
     it("异步解析应把 M3U 频道名换算为 XMLTV id 后过滤", async () => {
       const data = await parseEpgXmlAsync(SAMPLE_XML, new Set(["湖南卫视"]), NOW);
       expect(data.programmesByChannel.has("cctv1")).toBe(false);

@@ -155,14 +155,16 @@ const finishEpgData = (target: EpgAccumulator, fetchedAt: number): EpgData => {
   return { ...target, fetchedAt };
 };
 
-/** 把执行权还给 RN 一整帧，让播放器状态和遥控器事件优先被处理。 */
+/**
+ * 把执行权还给 RN 的 JS 事件循环，让播放器状态和遥控器事件优先被处理。
+ *
+ * 不能只等待 requestAnimationFrame：部分 Android TV 在原生视频画面播放时会
+ * 暂停 JS 侧的帧回调，导致 EPG 解析永远卡在第一次让步，页面便会一直显示
+ * “节目表尚未加载完成”。定时器不依赖画面刷新，电视息屏/视频播放时也会继续。
+ */
 const yieldToUi = () =>
   new Promise<void>((resolve) => {
-    if (typeof requestAnimationFrame === 'function') {
-      requestAnimationFrame(() => resolve());
-    } else {
-      setTimeout(resolve, 0);
-    }
+    setTimeout(resolve, 0);
   });
 
 const throwIfAborted = (signal?: AbortSignal) => {

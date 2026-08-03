@@ -114,6 +114,8 @@ export default function LiveScreen() {
   const [channelTitle, setChannelTitle] = useState<string | null>(null);
   // EPG 节目单数据（设置了 epgUrl 才有）
   const [epgData, setEpgData] = useState<EpgData | null>(null);
+  const [epgLoadState, setEpgLoadState] = useState<"idle" | "loading" | "ready" | "failed">("idle");
+  const [epgReloadKey, setEpgReloadKey] = useState(0);
   // 回看：NAS 录制频道清单（设置了 replayServerUrl 才有）、节目单面板目标频道、回放会话
   const [recordedChannels, setRecordedChannels] = useState<Set<string>>(new Set());
   const [replayChannel, setReplayChannel] = useState<Channel | null>(null);
@@ -133,6 +135,7 @@ export default function LiveScreen() {
   const replayFullListRef = useRef<EpgProgramme[]>([]);
   const replaySessionRef = useRef<{ url: string; title: string; channelName: string; channel: Channel; list: EpgProgramme[]; index: number } | null>(null);
   const epgDataRef = useRef<EpgData | null>(null);
+  const epgLoadStateRef = useRef<"idle" | "loading" | "ready" | "failed">("idle");
   const recordedChannelsRef = useRef<Set<string>>(new Set());
   // 频道搜索：有关键词时节目表切换为跨分组搜索结果模式
   const [searchKeyword, setSearchKeyword] = useState("");
@@ -188,6 +191,7 @@ export default function LiveScreen() {
   replayChannelRef.current = replayChannel;
   replaySessionRef.current = replaySession;
   epgDataRef.current = epgData;
+  epgLoadStateRef.current = epgLoadState;
   recordedChannelsRef.current = recordedChannels;
 
   // 加载频道收藏（本地持久化）
@@ -199,12 +203,15 @@ export default function LiveScreen() {
   useEffect(() => {
     if (!epgUrl || channels.length === 0) {
       setEpgData(null);
+      setEpgLoadState("idle");
       return;
     }
     if (!isScreenFocused) return;
 
     const controller = new AbortController();
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    epgLoadStateRef.current = "loading";
+    setEpgLoadState("loading");
     const loadEpg = async (allowRetry: boolean) => {
       const wantedChannels = new Set<string>();
       for (const channel of channels) {
@@ -216,6 +223,8 @@ export default function LiveScreen() {
       if (controller.signal.aborted) return;
       if (data) {
         setEpgData(data);
+        epgLoadStateRef.current = "ready";
+        setEpgLoadState("ready");
         const matchCount = channels.filter((channel) => findEpgProgrammes(data, channel).length > 0).length;
         logger.info(`节目表匹配完成：${matchCount}/${channels.length} 个频道`);
       } else if (allowRetry) {
@@ -224,6 +233,9 @@ export default function LiveScreen() {
         retryTimer = setTimeout(() => {
           void loadEpg(false);
         }, 5000);
+      } else {
+        epgLoadStateRef.current = "failed";
+        setEpgLoadState("failed");
       }
     };
     // 先让播放器建立连接并显示首帧，避免 EPG 下载/解析和首帧初始化同时争抢 JS 线程。
@@ -235,7 +247,7 @@ export default function LiveScreen() {
       if (retryTimer) clearTimeout(retryTimer);
       controller.abort();
     };
-  }, [epgUrl, channels, isScreenFocused]);
+  }, [epgUrl, channels, isScreenFocused, epgReloadKey]);
 
   // 配置了回看服务地址才拉取 NAS 录制频道清单；留空即不启用回看（功能自动隐藏）
   useEffect(() => {
@@ -461,17 +473,36 @@ export default function LiveScreen() {
       return;
     }
 
+    const configuredEpgUrl = useSettingsStore.getState().epgUrl.trim();
+    if (configuredEpgUrl && !epgDataRef.current) {
+      if (epgLoadStateRef.current === "failed") {
+        epgLoadStateRef.current = "loading";
+        setEpgLoadState("loading");
+        setEpgReloadKey((key) => key + 1);
+        Toast.show({
+          type: "info",
+          text1: "正在重新加载节目表",
+          text2: "加载完成后再按菜单键即可查看",
+        });
+      } else {
+        Toast.show({
+          type: "info",
+          text1: "节目表尚未加载完成",
+          text2: "请稍后再按菜单键重试",
+        });
+      }
+      return;
+    }
+
     const serverUrl = useSettingsStore.getState().replayServerUrl;
     if (serverUrl && recordedChannelsRef.current.has(channel.name)) {
       void openReplayByTimeBlocks(channel, serverUrl);
       return;
     }
 
-    const configuredEpgUrl = useSettingsStore.getState().epgUrl;
     Toast.show({
       type: "info",
-      text1: epgDataRef.current ? "该频道暂无节目表" : configuredEpgUrl ? "节目表尚未加载完成" : "未配置节目表地址",
-      text2: configuredEpgUrl && !epgDataRef.current ? "请稍后再按菜单键重试" : undefined,
+      text1: epgDataRef.current ? "该频道暂无节目表" : "未配置节目表地址",
     });
   };
 
