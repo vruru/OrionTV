@@ -156,6 +156,9 @@ export default function PlayScreen() {
 
     return () => {
       logger.info(`[PERF] PlayScreen unmounting - calling reset()`);
+      // 卸载前立即补存一次播放进度：播放中的进度保存有 10s 节流，
+      // 直接退出会丢掉最后最多 10 秒的观看进度。必须在 reset() 清空 status 之前调用。
+      usePlayerStore.getState()._savePlayRecord({}, { immediate: true });
       reset(); // Reset state when component unmounts
       usePreviewStore.getState().reset(); // Clear cached seek-preview thumbnails
     };
