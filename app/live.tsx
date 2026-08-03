@@ -501,6 +501,8 @@ export default function LiveScreen() {
 
   // 防止一次按键触发多次（select/longSelect 可能连续到达）
   const lastConfirmRef = useRef(0);
+  // 最近一次长按确认键的时间：长按后的 select 抬起事件要作废，避免一按两触发
+  const lastLongSelectRef = useRef(0);
   const confirmSelect = () => {
     const now = Date.now();
     if (now - lastConfirmRef.current < 400) return;
@@ -546,8 +548,16 @@ export default function LiveScreen() {
           case "down":
             moveReplayCursor(1);
             break;
-          case "select":
+          case "select": {
+            // 按下(action=0)不处理，等抬起；长按后的抬起作废，避免一按两触发
+            if (action === 0) break;
+            if (Date.now() - lastLongSelectRef.current < 600) break;
+            const prog = replayProgrammesRef.current[replayCursorRef.current];
+            if (prog) playReplay(prog);
+            break;
+          }
           case "longSelect": {
+            lastLongSelectRef.current = Date.now();
             const prog = replayProgrammesRef.current[replayCursorRef.current];
             if (prog) playReplay(prog);
             break;
@@ -583,19 +593,23 @@ export default function LiveScreen() {
       // 确认键的 onPress，所以 select 必须在这里处理）
       switch (type) {
         case "select":
+          // 按下(action=0)不处理，等抬起；长按后的抬起作废，避免一按两触发
+          if (action === 0) break;
+          if (Date.now() - lastLongSelectRef.current < 600) break;
           confirmSelect();
           break;
         case "longSelect": {
-          // 长按确认键：打开光标所在频道的回看节目单
+          // 长按确认键：收藏/取消收藏光标所在频道（与手机端长按一致）
+          lastLongSelectRef.current = Date.now();
           const ch = groupListRef.current[cursorRef.current];
-          if (ch) openReplayList(ch);
+          if (ch) void toggleFavoriteAndToast(ch);
           break;
         }
         case "menu":
         case "contextMenu": {
-          // TV 端：菜单键收藏/取消收藏光标所在频道
+          // TV 端：菜单键打开光标所在频道的回看节目单
           const ch = groupListRef.current[cursorRef.current];
-          if (ch) void toggleFavoriteAndToast(ch);
+          if (ch) openReplayList(ch);
           break;
         }
         case "up":
@@ -783,10 +797,13 @@ export default function LiveScreen() {
                 )}
               </View>
             </View>
+            <Text style={[styles.replayHint, { marginTop: 8, marginBottom: 0 }]}>
+              {deviceType === "tv" ? "确认键播放 · 菜单键打开回看 · 长按确认键收藏" : "点按播放 · 长按收藏"}
+            </Text>
           </View>
         </View>
       </Modal>
-      {/* 回看节目单：频道表里长按确认键打开；上下选择、确认回看已播节目、菜单/返回关闭 */}
+      {/* 回看节目单：频道表里按菜单键打开；上下选择、确认回看已播节目、菜单/返回关闭 */}
       <Modal
         animationType="slide"
         transparent={true}
