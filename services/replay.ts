@@ -53,3 +53,25 @@ export const buildReplayUrl = (
     `&start=${toCompact(startMs)}&stop=${toCompact(stopMs)}`
   );
 };
+
+/** 拉取该频道已录制分片的起始时间（epoch ms，升序）；失败返回空数组 */
+export const fetchCoverage = async (serverUrl: string, channel: string): Promise<number[]> => {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const base = serverUrl.replace(/\/+$/, "");
+      const res = await fetch(`${base}/coverage?channel=${encodeURIComponent(channel)}`, {
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      return Array.isArray(data) ? data.filter((n) => typeof n === "number").map((s) => s * 1000) : [];
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (e) {
+    logger.info("获取录制覆盖情况失败:", e);
+    return [];
+  }
+};
