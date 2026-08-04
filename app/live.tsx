@@ -16,7 +16,7 @@ import { RemoteControlModal } from "@/components/RemoteControlModal";
 import { matchChannelSearch } from "@/utils/pinyin";
 import { nextResizeMode, RESIZE_MODE_LABELS } from "@/utils/resizeMode";
 import { isTVLongPressStart } from "@/utils/tvRemote";
-import { EpgData, EpgProgramme, fetchEpg, getCurrentProgramme, buildEpgKeys, formatProgrammeTime } from "@/services/epg";
+import { EpgData, EpgProgramme, fetchEpg, getCurrentProgramme, buildEpgKeys, formatProgrammeTime, getEpgLastError } from "@/services/epg";
 import { fetchRecordedChannels, buildReplayUrl, fetchCoverage } from "@/services/replay";
 import Logger from "@/utils/Logger";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
@@ -493,7 +493,7 @@ export default function LiveScreen() {
         Toast.show({
           type: "info",
           text1: "节目表尚未加载完成",
-          text2: "请稍后再按菜单键重试",
+          text2: getEpgLastError() ? `最近错误：${getEpgLastError()}` : "请稍后再按菜单键重试",
         });
       }
       return;
@@ -1102,6 +1102,12 @@ export default function LiveScreen() {
             <Text style={[styles.replayHint, { marginTop: 8, marginBottom: 0 }]}>
               {deviceType === "tv" ? "确认键播放 · 菜单键打开节目表 · 长按确认键收藏" : "点按播放 · 长按收藏"}
             </Text>
+            {/* EPG 加载诊断：三轮盲调后把真实错误搬上屏幕，便于对症 */}
+            {deviceType === "tv" && epgUrl.trim() !== "" && epgLoadState !== "ready" && (
+              <Text style={styles.epgDiagText}>
+                {`节目表：${epgLoadState === "loading" ? "加载中…" : epgLoadState === "failed" ? "加载失败" : "未加载"}${getEpgLastError() ? " · " + getEpgLastError() : ""}`}
+              </Text>
+            )}
           </View>
         </View>
       </Modal>
@@ -1281,6 +1287,11 @@ const styles = StyleSheet.create({
   },
   replayFutureText: {
     color: "#666",
+  },
+  epgDiagText: {
+    color: "#d8a23c",
+    fontSize: 11,
+    marginTop: 4,
   },
   badgeSlotLeft: {
     width: 34,
