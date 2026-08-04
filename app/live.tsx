@@ -793,6 +793,8 @@ export default function LiveScreen() {
   const lastConfirmRef = useRef(0);
   // 最近一次长按确认键的时间：长按后的 select 抬起事件要作废，避免一按两触发
   const lastLongSelectRef = useRef(0);
+  // 回看态下键提示的节流（5 秒一次，避免连按刷屏）
+  const lastDownHintRef = useRef(0);
   const confirmSelect = () => {
     const now = Date.now();
     if (now - lastConfirmRef.current < 400) return;
@@ -876,15 +878,20 @@ export default function LiveScreen() {
         if (type === "down") {
           const sess = replaySessionRef.current;
           if (sess) {
-            // 盒子实测（二分+面包屑取证）：回看流播放中挂载重型频道表（150 行+
-            // 分组数据）会在原生层耗尽资源崩溃，崩点漂移、减载无效；回看节目单
-            // 面板在同场景稳定。故回看中下键与菜单键统一走节目单面板；
-            // 换台看直播：先按返回退出回看，再按下键开频道表。
-            writeBreadcrumb("down→guide(replay)");
-            openProgrammeGuide(sess.channel);
-          } else {
-            setIsChannelListVisible(true);
+            // 此盒子实测：下键事件会同时触发原生焦点移动，而此时焦点锚点正被卸载/
+            // 弹层正挂载，两者在原生层竞态必崩（菜单键不移焦点，故菜单键开节目单安全）。
+            // 因此回看播放中下键不做任何处理：换节目用菜单键/左右键，退出用返回键。
+            if (Date.now() - lastDownHintRef.current > 5000) {
+              lastDownHintRef.current = Date.now();
+              Toast.show({
+                type: "info",
+                text1: "回看中：菜单键打开节目单，左右键换节目",
+                text2: "退出回看请按返回键",
+              });
+            }
+            return;
           }
+          setIsChannelListVisible(true);
         }
         else if (type === "left") {
           // 回看播放中：左右键切上/下一个回看节目；直播时才是换台
