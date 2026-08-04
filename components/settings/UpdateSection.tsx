@@ -4,7 +4,7 @@ import * as Updates from "expo-updates";
 import { ThemedText } from "../ThemedText";
 import { StyledButton } from "../StyledButton";
 import { useUpdateStore } from "@/stores/updateStore";
-import { readCrashReport, clearCrashReport, CrashReport } from "@/utils/crashReport";
+import { readCrashReport, clearCrashReport, CrashReport, readBreadcrumb } from "@/utils/crashReport";
 import Logger from "@/utils/Logger";
 // import { UPDATE_CONFIG } from "@/constants/UpdateConfig";
 
@@ -30,9 +30,11 @@ export function UpdateSection() {
   const [otaMessage, setOtaMessage] = React.useState<string | null>(null);
   // 上次 JS 崩溃记录（release 包闪退的唯一取证渠道）
   const [crashReport, setCrashReport] = React.useState<CrashReport | null>(null);
+  const [breadcrumb, setBreadcrumb] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     void readCrashReport().then(setCrashReport);
+    void readBreadcrumb().then(setBreadcrumb);
   }, []);
 
   // 开发构建 / Expo Go 下 expo-updates 不可用
@@ -168,6 +170,14 @@ export function UpdateSection() {
             }}
           >
             {`${crashReport.at.slice(5, 16)} ${crashReport.message}\n${crashReport.stack.slice(0, 200)}`}
+          </ThemedText>
+        </View>
+      )}
+      {!crashReport && breadcrumb && (
+        <View style={styles.row}>
+          <ThemedText style={styles.label}>崩溃前最后一步</ThemedText>
+          <ThemedText style={[styles.value, styles.errorText]} numberOfLines={2}>
+            {breadcrumb}
           </ThemedText>
         </View>
       )}

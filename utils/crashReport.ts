@@ -6,6 +6,24 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const KEY = "crash_report_v1";
+const BREAD_KEY = "crash_breadcrumb_v1";
+
+/** 崩溃路径面包屑：覆盖写最新一步，崩了能知道死在哪一步 */
+export const writeBreadcrumb = (tag: string) => {
+  try {
+    void AsyncStorage.setItem(BREAD_KEY, `${new Date().toISOString().slice(11, 19)} ${tag}`);
+  } catch {
+    // 忽略
+  }
+};
+
+export const readBreadcrumb = async (): Promise<string | null> => {
+  try {
+    return await AsyncStorage.getItem(BREAD_KEY);
+  } catch {
+    return null;
+  }
+};
 
 export const installCrashReporter = () => {
   const anyGlobal = global as any;
