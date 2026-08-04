@@ -61,6 +61,18 @@ const EPG_CACHE_TTL = 10 * 60 * 1000;
 const EPG_DOWNLOAD_TIMEOUT = 10_000;
 const epgCache = new Map<string, { data: EpgData; expiresAt: number }>();
 
+// 最近一次 EPG 加载失败的原因：搬到电视屏幕上做诊断（盲调了三轮，需要真凭实据）
+let epgLastError: string | null = null;
+export const getEpgLastError = (): string | null => epgLastError;
+const setEpgLastError = (error: unknown) => {
+  if (!error) {
+    epgLastError = null;
+    return;
+  }
+  const err = error as { name?: string; message?: string };
+  epgLastError = `${err?.name ?? 'Error'}: ${err?.message ?? String(error)}`.slice(0, 120);
+};
+
 const CHANNEL_RE_SOURCE = '<channel\\s+id="([^"]+)"[^>]*>([\\s\\S]*?)<\\/channel>';
 const PROGRAMME_RE_SOURCE =
   '<programme\\s+[^>]*start="([^"]+)"[^>]*stop="([^"]+)"[^>]*channel="([^"]+)"[^>]*>([\\s\\S]*?)<\\/programme>';
@@ -292,6 +304,7 @@ export const fetchEpg = async (
       const text = await downloadEpgWithFetch(epgUrl, controller.signal);
       clearTimeout(timer);
       if (text.length > MAX_EPG_BYTES) {
+        setEpgLastError(new Error(`文件过大 ${(text.length / 1024 / 1024).toFixed(1)}MB，超过 40MB 上限`));
         logger.info(`EPG 文件过大（${(text.length / 1024 / 1024).toFixed(1)}MB），放弃解析`);
         return null;
       }
@@ -299,6 +312,7 @@ export const fetchEpg = async (
       logger.info(
         `EPG 解析完成：${data.programmesByChannel.size} 个频道有节目单，共 ${data.channelDisplayNames.size} 个频道名`
       );
+      setEpgLastError(null);
       epgCache.set(cacheKey, { data, expiresAt: Date.now() + EPG_CACHE_TTL });
       // 电视端只需要最近几套源，限制缓存规模，避免多次改地址后常驻过多节目单。
       while (epgCache.size > 3) {
@@ -312,6 +326,9 @@ export const fetchEpg = async (
     }
   } catch (error) {
     if (!controller.signal.aborted) logger.info('获取 EPG 失败:', error);
+    setEpgLastError(
+      controller.signal.aborted ? new Error('AbortError: 下载超时(10s)或被中止') : error
+    );
     return null;
   } finally {
     signal?.removeEventListener('abort', abortFromCaller);
