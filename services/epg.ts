@@ -73,9 +73,55 @@ const setEpgLastError = (error: unknown) => {
   epgLastError = `${err?.name ?? 'Error'}: ${err?.message ?? String(error)}`.slice(0, 120);
 };
 
-const CHANNEL_RE_SOURCE = '<channel\\s+id="([^"]+)"[^>]*>([\\s\\S]*?)<\\/channel>';
-const PROGRAMME_RE_SOURCE =
-  '<programme\\s+[^>]*start="([^"]+)"[^>]*stop="([^"]+)"[^>]*channel="([^"]+)"[^>]*>([\\s\\S]*?)<\\/programme>';
+// 标签切分扫描：不再用全文正则（Hermes 对 [\s\S]*? 懒匹配在超大输入上会灾难性
+// 回溯，Mac 的 V8 测不出来），改用 split 切块 + 小正则提属性，任何引擎都是线性时间。
+const xmltvAttr = (attrs: string, name: string): string | undefined =>
+  attrs.match(new RegExp(`${name}="([^"]*)"`))?.[1];
+
+const scanChannelChunk = (target: EpgAccumulator, chunk: string) => {
+  const gt = chunk.indexOf('>');
+  if (gt < 0) return;
+  const id = xmltvAttr(chunk.slice(0, gt), 'id');
+  if (!id) return;
+  const end = chunk.indexOf('</channel>');
+  const body = end >= 0 ? chunk.slice(gt + 1, end) : '';
+  const displayName = body.match(/<display-name[^>]*>([^<]*)<\/display-name>/)?.[1]?.trim();
+  if (!displayName) return;
+  target.channelDisplayNames.set(id, displayName);
+  const normalized = normalizeChannelName(displayName);
+  if (normalized && !target.channelIdsByNormalizedName.has(normalized)) {
+    target.channelIdsByNormalizedName.set(normalized, id);
+  }
+};
+
+const scanProgrammeChunk = (
+  target: EpgAccumulator,
+  chunk: string,
+  windowStart: number,
+  windowEnd: number,
+  wantedChannelIds?: Set<string>
+) => {
+  const gt = chunk.indexOf('>');
+  if (gt < 0) return;
+  const attrs = chunk.slice(0, gt);
+  const channelId = xmltvAttr(attrs, 'channel');
+  if (!channelId) return;
+  if (wantedChannelIds && wantedChannelIds.size > 0 && !wantedChannelIds.has(channelId)) return;
+
+  const start = parseXmltvTime(xmltvAttr(attrs, 'start') ?? '');
+  const stop = parseXmltvTime(xmltvAttr(attrs, 'stop') ?? '');
+  if (!start || !stop || stop <= windowStart || start >= windowEnd) return;
+
+  const end = chunk.indexOf('</programme>');
+  const body = end >= 0 ? chunk.slice(gt + 1, end) : chunk.slice(gt + 1);
+  const title = body.match(/<title[^>]*>([^<]*)<\/title>/)?.[1]?.trim();
+  if (!title) return;
+
+  const entry: EpgProgramme = { channel: channelId, start, stop, title };
+  const list = target.programmesByChannel.get(channelId);
+  if (list) list.push(entry);
+  else target.programmesByChannel.set(channelId, [entry]);
+};
 
 type EpgAccumulator = Pick<
   EpgData,
@@ -87,17 +133,6 @@ const createAccumulator = (): EpgAccumulator => ({
   channelDisplayNames: new Map<string, string>(),
   channelIdsByNormalizedName: new Map<string, string>(),
 });
-
-const addChannelMatch = (target: EpgAccumulator, match: RegExpExecArray) => {
-  const id = match[1];
-  const displayName = match[2].match(/<display-name[^>]*>([^<]*)<\/display-name>/)?.[1]?.trim();
-  if (!displayName) return;
-  target.channelDisplayNames.set(id, displayName);
-  const normalized = normalizeChannelName(displayName);
-  if (normalized && !target.channelIdsByNormalizedName.has(normalized)) {
-    target.channelIdsByNormalizedName.set(normalized, id);
-  }
-};
 
 /**
  * M3U 名称可能对应 XMLTV 里的多个别名。不能只取频道表中第一个别名，因为
@@ -122,29 +157,6 @@ const resolveWantedChannelIds = (
     }
   }
   return resolved;
-};
-
-const addProgrammeMatch = (
-  target: EpgAccumulator,
-  match: RegExpExecArray,
-  windowStart: number,
-  windowEnd: number,
-  wantedChannelIds?: Set<string>
-) => {
-  const channelId = match[3];
-  if (wantedChannelIds && wantedChannelIds.size > 0 && !wantedChannelIds.has(channelId)) return;
-
-  const start = parseXmltvTime(match[1]);
-  const stop = parseXmltvTime(match[2]);
-  if (!start || !stop || stop <= windowStart || start >= windowEnd) return;
-
-  const title = match[4].match(/<title[^>]*>([^<]*)<\/title>/)?.[1]?.trim();
-  if (!title) return;
-
-  const entry: EpgProgramme = { channel: channelId, start, stop, title };
-  const list = target.programmesByChannel.get(channelId);
-  if (list) list.push(entry);
-  else target.programmesByChannel.set(channelId, [entry]);
 };
 
 const finishEpgData = (target: EpgAccumulator, fetchedAt: number): EpgData => {
@@ -199,23 +211,19 @@ export const parseEpgXml = (
 ): EpgData => {
   const target = createAccumulator();
 
-  // 1. 频道表：<channel id="x"> <display-name...>名称</display-name> </channel>
-  const channelRe = new RegExp(CHANNEL_RE_SOURCE, 'g');
-  let cm: RegExpExecArray | null;
-  while ((cm = channelRe.exec(xmlText)) !== null) {
-    addChannelMatch(target, cm);
+  const channelChunks = xmlText.split('<channel ');
+  for (let i = 1; i < channelChunks.length; i++) {
+    scanChannelChunk(target, channelChunks[i]);
   }
 
   const effectiveWantedIds = resolveWantedChannelIds(target, wantedChannelIds);
 
-  // 2. 节目单：<programme start="..." stop="..." channel="x"> <title...>标题</title> </programme>
-  //    保留过去 54 小时（配合 NAS 回看 48h 窗口，多留 6h 余量）到未来 24 小时的节目
+  // 节目单：保留过去 54 小时（配合 NAS 回看 48h 窗口，多留 6h 余量）到未来 24 小时的节目
   const windowStart = now - 54 * 60 * 60 * 1000;
   const windowEnd = now + 24 * 60 * 60 * 1000;
-  const progRe = new RegExp(PROGRAMME_RE_SOURCE, 'g');
-  let pm: RegExpExecArray | null;
-  while ((pm = progRe.exec(xmlText)) !== null) {
-    addProgrammeMatch(target, pm, windowStart, windowEnd, effectiveWantedIds);
+  const progChunks = xmlText.split('<programme ');
+  for (let i = 1; i < progChunks.length; i++) {
+    scanProgrammeChunk(target, progChunks[i], windowStart, windowEnd, effectiveWantedIds);
   }
 
   return finishEpgData(target, now);
@@ -233,14 +241,12 @@ export const parseEpgXmlAsync = async (
 ): Promise<EpgData> => {
   throwIfAborted(signal);
   const target = createAccumulator();
-  const channelRe = new RegExp(CHANNEL_RE_SOURCE, 'g');
-  let cm: RegExpExecArray | null;
-  let scanned = 0;
   let sliceStartedAt = Date.now();
-  while ((cm = channelRe.exec(xmlText)) !== null) {
-    addChannelMatch(target, cm);
-    scanned++;
-    if (Date.now() - sliceStartedAt >= 4 || scanned % 100 === 0) {
+
+  const channelChunks = xmlText.split('<channel ');
+  for (let i = 1; i < channelChunks.length; i++) {
+    scanChannelChunk(target, channelChunks[i]);
+    if (Date.now() - sliceStartedAt >= 4 || i % 200 === 0) {
       await yieldToUi();
       throwIfAborted(signal);
       sliceStartedAt = Date.now();
@@ -252,16 +258,13 @@ export const parseEpgXmlAsync = async (
 
   const windowStart = now - 54 * 60 * 60 * 1000;
   const windowEnd = now + 24 * 60 * 60 * 1000;
-  const progRe = new RegExp(PROGRAMME_RE_SOURCE, 'g');
-  let pm: RegExpExecArray | null;
-  scanned = 0;
+  const progChunks = xmlText.split('<programme ');
   sliceStartedAt = Date.now();
-  while ((pm = progRe.exec(xmlText)) !== null) {
-    addProgrammeMatch(target, pm, windowStart, windowEnd, effectiveWantedIds);
-    scanned++;
+  for (let i = 1; i < progChunks.length; i++) {
+    scanProgrammeChunk(target, progChunks[i], windowStart, windowEnd, effectiveWantedIds);
     // 每个同步片段最多占用约 4ms；即使是性能较弱的电视盒子，也会在一帧内
-    // 把执行权还给播放器和遥控事件。250 条为快速设备上的强制让步上限。
-    if (Date.now() - sliceStartedAt >= 4 || scanned % 250 === 0) {
+    // 把执行权还给播放器和遥控事件。500 块为强制让步上限。
+    if (Date.now() - sliceStartedAt >= 4 || i % 500 === 0) {
       await yieldToUi();
       throwIfAborted(signal);
       sliceStartedAt = Date.now();
