@@ -973,9 +973,16 @@ export default function LiveScreen() {
         <LivePlayer
           streamUrl={replaySession ? replaySession.url : selectedChannelUrl}
           channelTitle={replaySession ? null : channelTitle}
-          onPlaybackStatusUpdate={() => {}}
+          onPlaybackStatusUpdate={(s: any) => {
+            // 崩溃埋点：播放器异常/播完事件（只记异常态，不记常规进度）
+            if (s?.didJustFinish) writeBreadcrumb("playerEvt:finished");
+            else if (!s?.isLoaded || s?.error) writeBreadcrumb(`playerEvt:${s?.error ? "error" : "notLoaded"}`);
+          }}
           retryKey={retryKey}
-          onPlaybackError={setPlaybackFailed}
+          onPlaybackError={(failed: boolean) => {
+            if (failed) writeBreadcrumb("playerEvt:onPlaybackError");
+            setPlaybackFailed(failed);
+          }}
         />
       ) : (
         <View style={styles.inactivePlayer} />
@@ -1056,8 +1063,10 @@ export default function LiveScreen() {
             </View>
             )}
             <View style={dynamicStyles.listContainer}>
-              {/* 搜索模式下隐藏分组列，结果为跨分组平铺列表 */}
-              {!isSearchMode && (
+              {/* 搜索模式下隐藏分组列，结果为跨分组平铺列表。
+                  【崩溃二分实验 B】回看会话期间同时隐藏分组列（单栏，
+                  与不崩的回看节目单同构），验证双栏+搜索行的渲染负载 */}
+              {!isSearchMode && !replaySession && (
                 <View style={dynamicStyles.groupColumn}>
                   <FlatList
                     data={displayGroups}
