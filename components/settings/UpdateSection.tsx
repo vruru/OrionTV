@@ -4,6 +4,7 @@ import * as Updates from "expo-updates";
 import { ThemedText } from "../ThemedText";
 import { StyledButton } from "../StyledButton";
 import { useUpdateStore } from "@/stores/updateStore";
+import { readCrashReport, clearCrashReport, CrashReport } from "@/utils/crashReport";
 import Logger from "@/utils/Logger";
 // import { UPDATE_CONFIG } from "@/constants/UpdateConfig";
 
@@ -27,6 +28,12 @@ export function UpdateSection() {
   const [checking, setChecking] = React.useState(false);
   const [otaState, setOtaState] = React.useState<OtaState>("idle");
   const [otaMessage, setOtaMessage] = React.useState<string | null>(null);
+  // 上次 JS 崩溃记录（release 包闪退的唯一取证渠道）
+  const [crashReport, setCrashReport] = React.useState<CrashReport | null>(null);
+
+  React.useEffect(() => {
+    void readCrashReport().then(setCrashReport);
+  }, []);
 
   // 开发构建 / Expo Go 下 expo-updates 不可用
   const otaSupported = Updates.isEnabled;
@@ -146,6 +153,21 @@ export function UpdateSection() {
           <ThemedText style={styles.label}>紧急回退</ThemedText>
           <ThemedText style={[styles.value, styles.errorText]} numberOfLines={2}>
             {Updates.emergencyLaunchReason || "更新异常，已回退到内嵌包"}
+          </ThemedText>
+        </View>
+      )}
+
+      {crashReport && (
+        <View style={styles.row}>
+          <ThemedText style={styles.label}>上次崩溃</ThemedText>
+          <ThemedText
+            style={[styles.value, styles.errorText, { flex: 1, textAlign: "right" }]}
+            numberOfLines={5}
+            onPress={() => {
+              void clearCrashReport().then(() => setCrashReport(null));
+            }}
+          >
+            {`${crashReport.at.slice(5, 16)} ${crashReport.message}\n${crashReport.stack.slice(0, 200)}`}
           </ThemedText>
         </View>
       )}

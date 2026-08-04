@@ -17,6 +17,7 @@ import { UpdateModal } from "@/components/UpdateModal";
 import { UPDATE_CONFIG } from "@/constants/UpdateConfig";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import Logger from '@/utils/Logger';
+import { installCrashReporter } from "@/utils/crashReport";
 import { initMonitoring } from "@/utils/monitoring";
 
 const logger = Logger.withTag('RootLayout');
@@ -42,6 +43,7 @@ export default function RootLayout() {
     const initializeApp = async () => {
       await loadSettings();
     };
+    installCrashReporter(); // JS 崩溃取证：致命异常写入存储，下次启动展示
     initializeApp();
     initUpdateStore(); // 初始化更新存储
     useSpeedTestStore.getState().loadResults(); // 载入上次的源测速结果
