@@ -3,8 +3,9 @@ import { View, FlatList, StyleSheet, ActivityIndicator, Modal, useTVEventHandler
 import { useIsFocused } from "@react-navigation/native";
 import { FlashList } from "@shopify/flash-list";
 import Toast from "react-native-toast-message";
-import { QrCode } from "lucide-react-native";
-import LivePlayer from "@/components/LivePlayer";
+import { QrCode, Play, Pause, Rewind, FastForward, SkipBack, SkipForward, Gauge } from "lucide-react-native";
+import LivePlayer, { LivePlayerControlRef } from "@/components/LivePlayer";
+import { MediaButton } from "@/components/MediaButton";
 import { fetchAndParseM3u, getPlayableUrl, Channel } from "@/services/m3u";
 import { api } from "@/services/api";
 import { ThemedView } from "@/components/ThemedView";
@@ -78,6 +79,17 @@ const formatReplayRowTime = (p: EpgProgramme): string => {
   return `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${formatProgrammeTime(p)}`;
 };
 
+// 毫秒 → "mm:ss" 或 "h:mm:ss"（回看控制条时间显示）
+const formatMillis = (ms: number): string => {
+  const total = Math.floor((ms || 0) / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const mm = m.toString().padStart(2, "0");
+  const ss = s.toString().padStart(2, "0");
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+};
+
 // 本地日期 key（如 "2026-8-3"）：回看节目单按天分组的依据
 const dayKeyOf = (ms: number): string => {
   const d = new Date(ms);
@@ -129,6 +141,15 @@ export default function LiveScreen() {
   // 节目单按天分组：当前日期下标（面板左右键切换日期）
   const [replayDateIdx, setReplayDateIdx] = useState(0);
   const [replaySession, setReplaySession] = useState<{ url: string; title: string; channelName: string; channel: Channel; list: EpgProgramme[]; index: number } | null>(null);
+  // 回看控制条（下键呼出）：进度/暂停/倍速/上下节目，8 秒无操作自动收起
+  const [replayControlsVisible, setReplayControlsVisible] = useState(false);
+  const [replayProgress, setReplayProgress] = useState<{ pos: number; dur: number }>({ pos: 0, dur: 0 });
+  const [replayPaused, setReplayPaused] = useState(false);
+  const [replayRate, setReplayRate] = useState(1);
+  const replayControlsRef = useRef(false);
+  replayControlsRef.current = replayControlsVisible;
+  const playerControlRef = useRef<LivePlayerControlRef>(null);
+  const controlsHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const replayCursorRef = useRef(0);
   const replayListRef = useRef<FlashList<EpgProgramme>>(null);
   // handleTVEvent 的 useCallback 依赖不含这些 state，闭包通过 ref 读最新值
@@ -605,6 +626,13 @@ export default function LiveScreen() {
   };
 
   // 回看播放中按左右键：切到当前频道的上一个/下一个可回看节目
+  // 回看控制条：呼出并重置 8 秒自动收起计时
+  const showReplayControls = () => {
+    setReplayControlsVisible(true);
+    if (controlsHideTimer.current) clearTimeout(controlsHideTimer.current);
+    controlsHideTimer.current = setTimeout(() => setReplayControlsVisible(false), 8000);
+  };
+
   const stepReplayProgramme = (delta: number) => {
     const sess = replaySessionRef.current;
     if (!sess) return;
@@ -689,10 +717,14 @@ export default function LiveScreen() {
     return () => clearTimeout(t);
   }, [isChannelListVisible]);
 
-  // 播放回看中按返回键：退出回看回到直播（拦截系统返回，不退出 App）
+  // 播放回看中按返回键：控制条开着先收控制条，否则退出回看回到直播（拦截系统返回）
   useEffect(() => {
     if (!isScreenFocused || !replaySession) return;
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (replayControlsRef.current) {
+        setReplayControlsVisible(false);
+        return true;
+      }
       setReplaySession(null);
       return true;
     });
@@ -793,8 +825,6 @@ export default function LiveScreen() {
   const lastConfirmRef = useRef(0);
   // 最近一次长按确认键的时间：长按后的 select 抬起事件要作废，避免一按两触发
   const lastLongSelectRef = useRef(0);
-  // 回看态下键提示的节流（5 秒一次，避免连按刷屏）
-  const lastDownHintRef = useRef(0);
   const confirmSelect = () => {
     const now = Date.now();
     if (now - lastConfirmRef.current < 400) return;
@@ -872,23 +902,22 @@ export default function LiveScreen() {
         return;
       }
 
+      // 回看控制条打开时：方向键交给系统焦点在按钮间移动，确认键原生触发按钮；
+      // 菜单/返回键只收起控制条（不退出回看）
+      if (replayControlsRef.current) {
+        if (type === "menu" || type === "contextMenu" || type === "back") setReplayControlsVisible(false);
+        return;
+      }
+
       if (!isChannelListVisible) {
         // 播放器界面：左右换台（同时退出回看），下键打开节目表，上键切换画面比例，
         // 菜单键退出回看，加载失败时确认键重试当前流
         if (type === "down") {
-          const sess = replaySessionRef.current;
-          if (sess) {
-            // 此盒子实测：下键事件会同时触发原生焦点移动，而此时焦点锚点正被卸载/
-            // 弹层正挂载，两者在原生层竞态必崩（菜单键不移焦点，故菜单键开节目单安全）。
-            // 因此回看播放中下键不做任何处理：换节目用菜单键/左右键，退出用返回键。
-            if (Date.now() - lastDownHintRef.current > 5000) {
-              lastDownHintRef.current = Date.now();
-              Toast.show({
-                type: "info",
-                text1: "回看中：菜单键打开节目单，左右键换节目",
-                text2: "退出回看请按返回键",
-              });
-            }
+          if (replaySessionRef.current) {
+            // 回看播放中下键 = 呼出播放控制条。注意：此盒子下键挂载 Modal 弹层
+            // 会与原生焦点移动竞态必崩（已取证），控制条是无 Modal 的轻量覆盖层，
+            // 且不改动焦点锚点，是安全路径。
+            showReplayControls();
             return;
           }
           setIsChannelListVisible(true);
@@ -986,12 +1015,18 @@ export default function LiveScreen() {
       {isScreenFocused ? (
         // 回看状态与节目名已经在右上角常驻显示，左上角不再重复显示回看标题。
         <LivePlayer
+          ref={playerControlRef}
           streamUrl={replaySession ? replaySession.url : selectedChannelUrl}
           channelTitle={replaySession ? null : channelTitle}
           onPlaybackStatusUpdate={(s: any) => {
             // 崩溃埋点：播放器异常/播完事件（只记异常态，不记常规进度）
             if (s?.didJustFinish) writeBreadcrumb("playerEvt:finished");
             else if (!s?.isLoaded || s?.error) writeBreadcrumb(`playerEvt:${s?.error ? "error" : "notLoaded"}`);
+            // 回看控制条的进度/暂停态数据源
+            if (s?.isLoaded && replaySessionRef.current) {
+              setReplayProgress({ pos: s.positionMillis ?? 0, dur: s.durationMillis ?? 0 });
+              setReplayPaused(!s.isPlaying);
+            }
           }}
           retryKey={retryKey}
           onPlaybackError={(failed: boolean) => {
@@ -1021,6 +1056,81 @@ export default function LiveScreen() {
           <Text style={styles.replayOverlayText} numberOfLines={1}>
             {replaySession.title}
           </Text>
+        </View>
+      )}
+      {/* 回看播放控制条（下键呼出）：进度/快退快进/暂停/倍速/上下节目。
+          无 Modal 的轻量覆盖层，方向键走系统焦点（避开下键挂载 Modal 的原生竞态崩溃） */}
+      {replaySession && replayControlsVisible && (
+        <View style={styles.replayControls}>
+          <View style={styles.replayCtrlProgressBg}>
+            <View
+              style={[
+                styles.replayCtrlProgressFill,
+                {
+                  width:
+                    replayProgress.dur > 0
+                      ? `${Math.min(100, (replayProgress.pos / replayProgress.dur) * 100)}%`
+                      : "0%",
+                },
+              ]}
+            />
+          </View>
+          <Text style={styles.replayCtrlTime}>
+            {`${formatMillis(replayProgress.pos)} / ${formatMillis(replayProgress.dur)}`}
+          </Text>
+          <View style={styles.replayCtrlRow}>
+            <MediaButton
+              onPress={() => {
+                showReplayControls();
+                stepReplayProgramme(-1);
+              }}
+            >
+              <SkipBack color="white" size={22} />
+            </MediaButton>
+            <MediaButton
+              onPress={() => {
+                showReplayControls();
+                void playerControlRef.current?.seekBy(-10000);
+              }}
+            >
+              <Rewind color="white" size={22} />
+            </MediaButton>
+            <MediaButton
+              hasTVPreferredFocus
+              onPress={() => {
+                showReplayControls();
+                void playerControlRef.current?.togglePlayPause();
+              }}
+            >
+              {replayPaused ? <Play color="white" size={22} /> : <Pause color="white" size={22} />}
+            </MediaButton>
+            <MediaButton
+              onPress={() => {
+                showReplayControls();
+                void playerControlRef.current?.seekBy(30000);
+              }}
+            >
+              <FastForward color="white" size={22} />
+            </MediaButton>
+            <MediaButton
+              onPress={() => {
+                showReplayControls();
+                stepReplayProgramme(1);
+              }}
+            >
+              <SkipForward color="white" size={22} />
+            </MediaButton>
+            <MediaButton
+              timeLabel={replayRate !== 1 ? `${replayRate}x` : undefined}
+              onPress={async () => {
+                showReplayControls();
+                const r = await playerControlRef.current?.cycleRate();
+                if (r) setReplayRate(r);
+              }}
+            >
+              <Gauge color="white" size={22} />
+            </MediaButton>
+          </View>
         </View>
       )}
       {/* 移动端/平板：加载失败时点按重试（TV 端走确认键） */}
@@ -1363,6 +1473,40 @@ const styles = StyleSheet.create({
     color: "#d8a23c",
     fontSize: 11,
     marginTop: 4,
+  },
+  replayControls: {
+    position: "absolute",
+    left: 60,
+    right: 60,
+    bottom: 48,
+    backgroundColor: "rgba(0, 0, 0, 0.72)",
+    borderRadius: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+  },
+  replayCtrlProgressBg: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "rgba(255, 255, 255, 0.25)",
+    overflow: "hidden",
+  },
+  replayCtrlProgressFill: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#9ec9ff",
+  },
+  replayCtrlTime: {
+    color: "#ddd",
+    fontSize: 12,
+    marginTop: 6,
+    textAlign: "center",
+  },
+  replayCtrlRow: {
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 10,
+    marginTop: 8,
+    flexWrap: "wrap",
   },
   badgeSlotLeft: {
     width: 34,
