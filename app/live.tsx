@@ -874,9 +874,17 @@ export default function LiveScreen() {
         // 播放器界面：左右换台（同时退出回看），下键打开节目表，上键切换画面比例，
         // 菜单键退出回看，加载失败时确认键重试当前流
         if (type === "down") {
-          // 崩溃路径埋点①：回看会话存在时开频道表必崩，记录动作起点
-          writeBreadcrumb(`down→openList(replay=${replaySessionRef.current ? 1 : 0})`);
-          setIsChannelListVisible(true);
+          const sess = replaySessionRef.current;
+          if (sess) {
+            // 盒子实测（二分+面包屑取证）：回看流播放中挂载重型频道表（150 行+
+            // 分组数据）会在原生层耗尽资源崩溃，崩点漂移、减载无效；回看节目单
+            // 面板在同场景稳定。故回看中下键与菜单键统一走节目单面板；
+            // 换台看直播：先按返回退出回看，再按下键开频道表。
+            writeBreadcrumb("down→guide(replay)");
+            openProgrammeGuide(sess.channel);
+          } else {
+            setIsChannelListVisible(true);
+          }
         }
         else if (type === "left") {
           // 回看播放中：左右键切上/下一个回看节目；直播时才是换台
@@ -1039,10 +1047,7 @@ export default function LiveScreen() {
                 按键处理（含确认键）统一在 handleTVEvent 里完成。 */}
             <Pressable focusable hasTVPreferredFocus style={styles.focusTrap} />
             {/* 搜索行：移动端直接点按输入；TV 端光标在首行时再按上键聚焦，
-                也可扫码用手机远程输入。
-                【崩溃二分实验 A】回看会话期间不渲染（TextInput+QR 是频道表
-                相对回看节目单仅有的独有原生组件；实验证明不崩后再做懒挂载正式修复） */}
-            {!replaySession && (
+                也可扫码用手机远程输入。 */}
             <View style={dynamicStyles.searchRow}>
               <TextInput
                 ref={searchInputRef}
@@ -1061,12 +1066,9 @@ export default function LiveScreen() {
                 </Pressable>
               )}
             </View>
-            )}
             <View style={dynamicStyles.listContainer}>
-              {/* 搜索模式下隐藏分组列，结果为跨分组平铺列表。
-                  【崩溃二分实验 B】回看会话期间同时隐藏分组列（单栏，
-                  与不崩的回看节目单同构），验证双栏+搜索行的渲染负载 */}
-              {!isSearchMode && !replaySession && (
+              {/* 搜索模式下隐藏分组列，结果为跨分组平铺列表 */}
+              {!isSearchMode && (
                 <View style={dynamicStyles.groupColumn}>
                   <FlatList
                     data={displayGroups}
