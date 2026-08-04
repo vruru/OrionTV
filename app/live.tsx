@@ -19,6 +19,7 @@ import { isTVLongPressStart } from "@/utils/tvRemote";
 import { EpgData, EpgProgramme, fetchEpg, getCurrentProgramme, buildEpgKeys, formatProgrammeTime, getEpgLastError } from "@/services/epg";
 import { fetchRecordedChannels, buildReplayUrl, fetchCoverage } from "@/services/replay";
 import Logger from "@/utils/Logger";
+import { writeBreadcrumb } from "@/utils/crashReport";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
 import ResponsiveNavigation from "@/components/navigation/ResponsiveNavigation";
@@ -143,6 +144,9 @@ export default function LiveScreen() {
   const epgLoadStateRef = useRef<"idle" | "loading" | "ready" | "failed">("idle");
   const epgLoadStartedAtRef = useRef(0);
   const recordedChannelsRef = useRef<Set<string>>(new Set());
+  // handleTVEvent 闭包读取的全频道表与当前台（直播时菜单键开当前台节目单用）
+  const allChannelsRef = useRef<Channel[]>([]);
+  const currentIndexRef = useRef(0);
   // 频道搜索：有关键词时节目表切换为跨分组搜索结果模式
   const [searchKeyword, setSearchKeyword] = useState("");
   const [isSearchFocused, setIsSearchFocused] = useState(false);
@@ -199,6 +203,8 @@ export default function LiveScreen() {
   epgDataRef.current = epgData;
   epgLoadStateRef.current = epgLoadState;
   recordedChannelsRef.current = recordedChannels;
+  allChannelsRef.current = channels;
+  currentIndexRef.current = currentChannelIndex;
 
   // 加载频道收藏（本地持久化）
   useEffect(() => {
@@ -676,6 +682,13 @@ export default function LiveScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isChannelListVisible]);
 
+  // 崩溃路径埋点③：弹层存活 800ms 标记（死在哪一步一看便知）
+  useEffect(() => {
+    if (!isChannelListVisible) return;
+    const t = setTimeout(() => writeBreadcrumb("channelList alive800ms"), 800);
+    return () => clearTimeout(t);
+  }, [isChannelListVisible]);
+
   // 播放回看中按返回键：退出回看回到直播（拦截系统返回，不退出 App）
   useEffect(() => {
     if (!isScreenFocused || !replaySession) return;
@@ -713,8 +726,11 @@ export default function LiveScreen() {
       setSearchKeyword("");
     }
   }, [isChannelListVisible]);
+  // 失焦清理：离开直播页时收起一切。注意弹层（频道表/回看节目单）打开期间，
+  // 部分 Android TV 的 useIsFocused 会瞬时翻 false——此时必须视为页面仍活跃，
+  // 否则会在弹层打开瞬间误清理会话并触发播放器卸载（原生 unload 崩溃高发路径）
   useEffect(() => {
-    if (isScreenFocused) return;
+    if (isScreenFocused || isChannelListVisible || replayChannel) return;
     stopFast();
     searchInputRef.current?.blur();
     setIsSearchFocused(false);
@@ -722,7 +738,7 @@ export default function LiveScreen() {
     setReplayChannel(null);
     setReplayBlocks(null);
     setReplaySession(null);
-  }, [isScreenFocused]);
+  }, [isScreenFocused, isChannelListVisible, replayChannel]);
   useEffect(
     () => () => {
       stopFast();
@@ -857,7 +873,11 @@ export default function LiveScreen() {
       if (!isChannelListVisible) {
         // 播放器界面：左右换台（同时退出回看），下键打开节目表，上键切换画面比例，
         // 菜单键退出回看，加载失败时确认键重试当前流
-        if (type === "down") setIsChannelListVisible(true);
+        if (type === "down") {
+          // 崩溃路径埋点①：回看会话存在时开频道表必崩，记录动作起点
+          writeBreadcrumb(`down→openList(replay=${replaySessionRef.current ? 1 : 0})`);
+          setIsChannelListVisible(true);
+        }
         else if (type === "left") {
           // 回看播放中：左右键切上/下一个回看节目；直播时才是换台
           if (replaySessionRef.current) stepReplayProgramme(-1);
@@ -867,9 +887,10 @@ export default function LiveScreen() {
           else changeChannel("next");
         } else if (type === "up") cycleResizeModeWithToast();
         else if (type === "menu" || type === "contextMenu") {
-          // 回看播放中按菜单键：直接打开该频道的节目单（方便接着选下一集）
+          // 菜单键：回看时开回看台节目单（接着选下一集）；直播时开当前台节目表
           const sess = replaySessionRef.current;
-          if (sess) openProgrammeGuide(sess.channel);
+          const ch = sess ? sess.channel : allChannelsRef.current[currentIndexRef.current];
+          if (ch) openProgrammeGuide(ch);
         }
         else if ((type === "select" || type === "playPause") && playbackFailedRef.current) {
           setRetryKey((k) => k + 1);
@@ -1003,6 +1024,7 @@ export default function LiveScreen() {
         transparent={true}
         visible={isChannelListVisible}
         onRequestClose={() => setIsChannelListVisible(false)}
+        onShow={() => writeBreadcrumb("channelList shown")}
       >
         <View style={dynamicStyles.modalContainer}>
           <View style={dynamicStyles.modalContent}>
