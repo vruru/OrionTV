@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect, useLayoutEffect } from "react";
+import React, { useRef, useState, useEffect, useLayoutEffect, forwardRef, useImperativeHandle } from "react";
 import { View, StyleSheet, Text, ActivityIndicator } from "react-native";
 import { Video, AVPlaybackStatus } from "expo-av";
 import { useKeepAwake } from "expo-keep-awake";
@@ -15,18 +15,56 @@ interface LivePlayerProps {
   onPlaybackError?: (failed: boolean) => void;
 }
 
+/** 回看（VOD）场景的命令式控制：快进快退/暂停播放/倍速 */
+export interface LivePlayerControlRef {
+  seekBy: (deltaMs: number) => Promise<void>;
+  togglePlayPause: () => Promise<void>;
+  cycleRate: () => Promise<number>;
+}
+
 const PLAYBACK_TIMEOUT = 15000; // 15 seconds
 
-export default function LivePlayer({ streamUrl, channelTitle, onPlaybackStatusUpdate, retryKey = 0, onPlaybackError }: LivePlayerProps) {
+const REPLAY_RATES = [1, 1.25, 1.5, 2];
+
+const LivePlayer = forwardRef<LivePlayerControlRef, LivePlayerProps>(function LivePlayer(
+  { streamUrl, channelTitle, onPlaybackStatusUpdate, retryKey = 0, onPlaybackError },
+  ref
+) {
   const video = useRef<Video>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isTimeout, setIsTimeout] = useState(false);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   // 一旦当前流已经真正开始播放，后续短暂缓冲不再用全屏加载层盖住画面。
   const hasPlaybackStartedRef = useRef(false);
+  // 最近一次播放状态（seek/暂停/倍速的命令式控制读取用）
+  const statusRef = useRef<AVPlaybackStatus | null>(null);
+  const rateRef = useRef(1);
   // 全局画面比例设置（设置页 / TV 上键快捷切换即时生效）
   const videoResizeMode = useSettingsStore((s) => s.videoResizeMode);
   useKeepAwake();
+
+  useImperativeHandle(ref, () => ({
+    seekBy: async (deltaMs: number) => {
+      const st = statusRef.current;
+      if (!st || !st.isLoaded) return;
+      const dur = st.durationMillis ?? 0;
+      const next = Math.max(0, Math.min(dur, (st.positionMillis ?? 0) + deltaMs));
+      await video.current?.setPositionAsync(next).catch(() => undefined);
+    },
+    togglePlayPause: async () => {
+      const st = statusRef.current;
+      if (!st || !st.isLoaded) return;
+      if (st.isPlaying) await video.current?.pauseAsync().catch(() => undefined);
+      else await video.current?.playAsync().catch(() => undefined);
+    },
+    cycleRate: async () => {
+      const idx = REPLAY_RATES.indexOf(rateRef.current);
+      const next = REPLAY_RATES[(idx + 1) % REPLAY_RATES.length];
+      rateRef.current = next;
+      await video.current?.setRateAsync(next, true).catch(() => undefined);
+      return next;
+    },
+  }));
 
   // 部分 Android TV 固件在 React 视图卸载后不会立刻释放解码器；主动 unload，
   // 避免退出直播页后后台视频仍占用硬解/网络并持续派发状态回调。
@@ -71,6 +109,7 @@ export default function LivePlayer({ streamUrl, channelTitle, onPlaybackStatusUp
   }, [isTimeout, onPlaybackError]);
 
   const handlePlaybackStatusUpdate = (status: AVPlaybackStatus) => {
+    statusRef.current = status;
     if (status.isLoaded) {
       if (status.isPlaying) {
         hasPlaybackStartedRef.current = true;
@@ -145,7 +184,10 @@ export default function LivePlayer({ streamUrl, channelTitle, onPlaybackStatusUp
       )}
     </View>
   );
-}
+});
+
+LivePlayer.displayName = "LivePlayer";
+export default LivePlayer;
 
 const styles = StyleSheet.create({
   container: {
