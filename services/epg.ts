@@ -6,7 +6,6 @@
  * 且属于目标频道的节目，内存与时间开销都可控。
  */
 import Logger from '@/utils/Logger';
-import { Platform } from 'react-native';
 
 const logger = Logger.withTag('EPG');
 
@@ -267,35 +266,6 @@ const downloadEpgWithFetch = async (epgUrl: string, signal: AbortSignal): Promis
   return response.text();
 };
 
-/**
- * Android TV 上使用原生下载通道，绕过部分盒子中 fetch().text() 读取较大 XML 时
- * 一直不结束的问题。react-native-blob-util 已随 APK 原生构建。
- */
-const downloadEpgWithNativeTvClient = async (epgUrl: string, signal: AbortSignal): Promise<string> => {
-  throwIfAborted(signal);
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const ReactNativeBlobUtil = require('react-native-blob-util').default as typeof import('react-native-blob-util').default;
-  const task = ReactNativeBlobUtil
-    .config({ timeout: EPG_DOWNLOAD_TIMEOUT })
-    .fetch('GET', epgUrl, {
-      Accept: 'application/xml,text/xml,*/*',
-      'Cache-Control': 'no-cache',
-    });
-  const abort = () => {
-    task.cancel();
-  };
-  signal.addEventListener('abort', abort, { once: true });
-  try {
-    const response = await task;
-    const status = response.info().status;
-    if (status < 200 || status >= 300) throw new Error(`HTTP ${status}`);
-    const text = await response.text();
-    return String(text);
-  } finally {
-    signal.removeEventListener('abort', abort);
-  }
-};
-
 export const fetchEpg = async (
   epgUrl: string,
   wantedChannelIds?: Set<string>,
@@ -315,20 +285,11 @@ export const fetchEpg = async (
   signal?.addEventListener('abort', abortFromCaller, { once: true });
   try {
     // 网络下载需要超时保护，但本地解析不能共用这个计时器。
+    // 注意：本机已验证纯 fetch 在该电视盒上可用（原生 blob-util 通道曾在
+    // 此盒上引入"永不返回"的回归，勿再绕行原生下载器）。
     const timer = setTimeout(() => controller.abort(), EPG_DOWNLOAD_TIMEOUT);
     try {
-      let text: string;
-      if (Platform.OS === 'android' && Platform.isTV) {
-        try {
-          text = await downloadEpgWithNativeTvClient(epgUrl, controller.signal);
-        } catch (nativeError) {
-          if (controller.signal.aborted) throw nativeError;
-          logger.info('电视原生 EPG 下载失败，改用标准网络请求:', nativeError);
-          text = await downloadEpgWithFetch(epgUrl, controller.signal);
-        }
-      } else {
-        text = await downloadEpgWithFetch(epgUrl, controller.signal);
-      }
+      const text = await downloadEpgWithFetch(epgUrl, controller.signal);
       clearTimeout(timer);
       if (text.length > MAX_EPG_BYTES) {
         logger.info(`EPG 文件过大（${(text.length / 1024 / 1024).toFixed(1)}MB），放弃解析`);
