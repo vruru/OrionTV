@@ -1032,7 +1032,10 @@ export default function LiveScreen() {
                 按键处理（含确认键）统一在 handleTVEvent 里完成。 */}
             <Pressable focusable hasTVPreferredFocus style={styles.focusTrap} />
             {/* 搜索行：移动端直接点按输入；TV 端光标在首行时再按上键聚焦，
-                也可扫码用手机远程输入。 */}
+                也可扫码用手机远程输入。
+                【崩溃二分实验 A】回看会话期间不渲染（TextInput+QR 是频道表
+                相对回看节目单仅有的独有原生组件；实验证明不崩后再做懒挂载正式修复） */}
+            {!replaySession && (
             <View style={dynamicStyles.searchRow}>
               <TextInput
                 ref={searchInputRef}
@@ -1051,6 +1054,7 @@ export default function LiveScreen() {
                 </Pressable>
               )}
             </View>
+            )}
             <View style={dynamicStyles.listContainer}>
               {/* 搜索模式下隐藏分组列，结果为跨分组平铺列表 */}
               {!isSearchMode && (
