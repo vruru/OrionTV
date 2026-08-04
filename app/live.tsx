@@ -121,6 +121,8 @@ export default function LiveScreen() {
   const [recordedChannels, setRecordedChannels] = useState<Set<string>>(new Set());
   const [replayChannel, setReplayChannel] = useState<Channel | null>(null);
   const [replayCursor, setReplayCursor] = useState(0);
+  // 当前面板频道的录像覆盖（分片起始时间 ms）：有覆盖的节目行才显示「回看」标
+  const [replayCoverage, setReplayCoverage] = useState<number[] | null>(null);
   // 无 EPG 频道的兜底：按录制覆盖生成的小时块时段单（有值时优先于 EPG 节目单）
   const [replayBlocks, setReplayBlocks] = useState<EpgProgramme[] | null>(null);
   // 节目单按天分组：当前日期下标（面板左右键切换日期）
@@ -134,6 +136,8 @@ export default function LiveScreen() {
   const replayDatesRef = useRef<string[]>([]);
   const replayDateIdxRef = useRef(0);
   const replayFullListRef = useRef<EpgProgramme[]>([]);
+  const replayCoverageRef = useRef<number[] | null>(null);
+  replayCoverageRef.current = replayCoverage;
   const replaySessionRef = useRef<{ url: string; title: string; channelName: string; channel: Channel; list: EpgProgramme[]; index: number } | null>(null);
   const epgDataRef = useRef<EpgData | null>(null);
   const epgLoadStateRef = useRef<"idle" | "loading" | "ready" | "failed">("idle");
@@ -415,6 +419,7 @@ export default function LiveScreen() {
   const closeReplay = () => {
     setReplayChannel(null);
     setReplayBlocks(null);
+    setReplayCoverage(null);
   };
 
   const openReplayWithList = (channel: Channel, list: EpgProgramme[], isBlocks: boolean) => {
@@ -441,6 +446,14 @@ export default function LiveScreen() {
     setReplayCursor(cursor);
     setReplayBlocks(isBlocks ? list : null);
     setReplayChannel(channel);
+    // 录制频道的 EPG 面板：拉录像覆盖，给有录像的节目行打「回看」标
+    setReplayCoverage(null);
+    const serverUrl = useSettingsStore.getState().replayServerUrl;
+    if (!isBlocks && serverUrl && recordedChannelsRef.current.has(channel.name)) {
+      void fetchCoverage(serverUrl, channel.name).then((segs) => {
+        if (replayChannelRef.current?.id === channel.id) setReplayCoverage(segs);
+      });
+    }
   };
 
   // 无 EPG 频道的降级：按录制覆盖情况生成"小时块"时段单，只保留已录完的完整小时
@@ -565,6 +578,12 @@ export default function LiveScreen() {
     }
     if (prog.stop > Date.now()) {
       Toast.show({ type: "info", text1: "节目尚未播完，暂不可回看" });
+      return;
+    }
+    // 录像覆盖判定：无覆盖的时段给出明确提示（10 分钟分片粒度）
+    const coverage = replayCoverageRef.current;
+    if (coverage && !coverage.some((s) => s < prog.stop && s + 600000 > prog.start)) {
+      Toast.show({ type: "info", text1: "该时段没有录像", text2: "可能当时未开始录制或正在避让" });
       return;
     }
     const url = buildReplayUrl(serverUrl, channel.name, prog.start, prog.stop);
@@ -1136,13 +1155,20 @@ export default function LiveScreen() {
               ref={replayListRef}
               data={replayDayList}
               keyExtractor={(item, index) => `${item.start}-${index}`}
-              extraData={`${replayCursor}-${replayDateIdx}`}
+              extraData={`${replayCursor}-${replayDateIdx}-${replayCoverage?.length ?? "x"}`}
               estimatedItemSize={40}
               renderItem={({ item, index }) => {
                 const isCursor = index === replayCursor;
                 const now = Date.now();
                 const playable = item.stop <= now;
                 const onAir = item.start <= now && now < item.stop;
+                // 录像覆盖：录制频道才判定；有覆盖的已播节目打「回看」标，无覆盖置灰
+                const isRecordedChan = replayChannel ? recordedChannels.has(replayChannel.name) : false;
+                const covered = replayCoverage
+                  ? replayCoverage.some((s) => s < item.stop && s + 600000 > item.start)
+                  : true;
+                const showReplayBadge = isRecordedChan && playable && covered;
+                const dimmed = !playable || (isRecordedChan && playable && !covered);
                 return (
                   <Pressable focusable={deviceType !== "tv"} onPress={() => playReplay(item)}>
                     <View style={[dynamicStyles.channelRow, { height: 40 }, isCursor && styles.rowActive]}>
@@ -1151,11 +1177,12 @@ export default function LiveScreen() {
                         style={[
                           dynamicStyles.channelRowText,
                           isCursor && styles.rowActiveText,
-                          !playable && styles.replayFutureText,
+                          dimmed && styles.replayFutureText,
                         ]}
                       >
                         {`${formatReplayRowTime(item)}  ${item.title}${onAir ? "（正在播）" : ""}`}
                       </Text>
+                      {showReplayBadge ? <Text style={styles.catchupBadge}>回看</Text> : null}
                     </View>
                   </Pressable>
                 );
