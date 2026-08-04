@@ -1105,7 +1105,7 @@ export default function LiveScreen() {
             {/* EPG 加载诊断：三轮盲调后把真实错误搬上屏幕，便于对症 */}
             {deviceType === "tv" && epgUrl.trim() !== "" && epgLoadState !== "ready" && (
               <Text style={styles.epgDiagText}>
-                {`节目表：${epgLoadState === "loading" ? "加载中…" : epgLoadState === "failed" ? "加载失败" : "未加载"}${getEpgLastError() ? " · " + getEpgLastError() : ""}`}
+                {`节目表：${epgLoadState === "loading" ? "加载中…" : epgLoadState === "failed" ? "加载失败" : "未加载"} · ${epgUrl.trim()}${getEpgLastError() ? " · " + getEpgLastError() : ""}`}
               </Text>
             )}
           </View>
