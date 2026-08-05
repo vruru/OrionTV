@@ -117,6 +117,36 @@ interface ReplaySession {
   isBlocks: boolean;
 }
 
+interface LiveOverlayHostProps {
+  isTV: boolean;
+  visible: boolean;
+  onRequestClose: () => void;
+  onShow?: () => void;
+  children: React.ReactNode;
+}
+
+/**
+ * React Native Modal 在 Android 上会创建独立 Dialog/窗口，TV 原生焦点也会随之
+ * 切换到另一棵 View 树。直播页的覆盖层由 JS 统一处理遥控器事件，TV 端没有必要
+ * 创建 Dialog；手机/平板仍保留系统 Modal 的返回键与触摸行为。
+ */
+const LiveOverlayHost = ({ isTV, visible, onRequestClose, onShow, children }: LiveOverlayHostProps) => {
+  if (isTV) {
+    return visible ? <View style={styles.inlineOverlayHost}>{children}</View> : null;
+  }
+  return (
+    <Modal
+      animationType="slide"
+      transparent
+      visible={visible}
+      onRequestClose={onRequestClose}
+      onShow={onShow}
+    >
+      {children}
+    </Modal>
+  );
+};
+
 export default function LiveScreen() {
   const isScreenFocused = useIsFocused();
   const { m3uUrl, apiBaseUrl, epgUrl, replayServerUrl, remoteInputEnabled } = useSettingsStore();
@@ -490,6 +520,10 @@ export default function LiveScreen() {
     setReplayCursor(cursor);
     replayBlocksRef.current = isBlocks ? list : null;
     setReplayBlocks(replayBlocksRef.current);
+    // 从频道列表进入节目表时先卸掉列表覆盖层；两块面板不能同时留在焦点树中。
+    searchInputRef.current?.blur();
+    setIsSearchFocused(false);
+    setIsChannelListVisible(false);
     replayChannelRef.current = channel;
     setReplayChannel(channel);
     // 录制频道的 EPG 面板：拉录像覆盖，给有录像的节目行打「回看」标
@@ -1276,9 +1310,8 @@ export default function LiveScreen() {
           </Text>
         </View>
       )}
-      <Modal
-        animationType="slide"
-        transparent={true}
+      <LiveOverlayHost
+        isTV={deviceType === "tv"}
         visible={isChannelListVisible}
         onRequestClose={() => setIsChannelListVisible(false)}
         onShow={() => writeBreadcrumb("channelList shown")}
@@ -1408,7 +1441,7 @@ export default function LiveScreen() {
             )}
           </View>
         </View>
-      </Modal>
+      </LiveOverlayHost>
       {/* 回看节目表留在当前 ReactRootView 内，不创建 Android Dialog，也不切换原生焦点。
           约几十条的日节目单使用固定行高 FlatList，避免 FlashList 测量竞态。 */}
       {replayChannel && (
@@ -1692,6 +1725,11 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     zIndex: 40,
     elevation: 40,
+  },
+  inlineOverlayHost: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 30,
+    elevation: 30,
   },
 });
 
