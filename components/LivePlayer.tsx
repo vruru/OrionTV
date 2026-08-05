@@ -20,6 +20,7 @@ export interface LivePlayerControlRef {
   seekBy: (deltaMs: number) => Promise<void>;
   togglePlayPause: () => Promise<void>;
   cycleRate: () => Promise<number>;
+  getStatusSnapshot: () => { positionMillis: number; durationMillis: number; isPlaying: boolean } | null;
 }
 
 const PLAYBACK_TIMEOUT = 15000; // 15 seconds
@@ -64,6 +65,15 @@ const LivePlayer = forwardRef<LivePlayerControlRef, LivePlayerProps>(function Li
       await video.current?.setRateAsync(next, true).catch(() => undefined);
       return next;
     },
+    getStatusSnapshot: () => {
+      const status = statusRef.current;
+      if (!status || !status.isLoaded) return null;
+      return {
+        positionMillis: status.positionMillis ?? 0,
+        durationMillis: status.durationMillis ?? 0,
+        isPlaying: status.isPlaying,
+      };
+    },
   }));
 
   // 部分 Android TV 固件在 React 视图卸载后不会立刻释放解码器；主动 unload，
@@ -83,6 +93,8 @@ const LivePlayer = forwardRef<LivePlayerControlRef, LivePlayerProps>(function Li
 
     if (streamUrl) {
       hasPlaybackStartedRef.current = false;
+      statusRef.current = null;
+      rateRef.current = 1;
       setIsLoading(true);
       setIsTimeout(false);
       timeoutRef.current = setTimeout(() => {
@@ -165,6 +177,7 @@ const LivePlayer = forwardRef<LivePlayerControlRef, LivePlayerProps>(function Li
         }}
         resizeMode={toAvResizeMode(videoResizeMode)}
         shouldPlay
+        progressUpdateIntervalMillis={1000}
         onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
         onError={(e) => {
           setIsTimeout(true);

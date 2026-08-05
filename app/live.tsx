@@ -21,6 +21,7 @@ import { EpgData, EpgProgramme, fetchEpg, getCurrentProgramme, buildEpgKeys, for
 import { fetchRecordedChannels, buildReplayUrl, fetchCoverage } from "@/services/replay";
 import Logger from "@/utils/Logger";
 import { writeBreadcrumb } from "@/utils/crashReport";
+import { DEFAULT_REPLAY_CONTROL_INDEX, findReplayGuideIndex, moveReplayControlIndex } from "@/utils/replayUi";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
 import ResponsiveNavigation from "@/components/navigation/ResponsiveNavigation";
@@ -106,6 +107,16 @@ const replayDayLabel = (key: string): string => {
   return `${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
 };
 
+interface ReplaySession {
+  url: string;
+  title: string;
+  channelName: string;
+  channel: Channel;
+  list: EpgProgramme[];
+  index: number;
+  isBlocks: boolean;
+}
+
 export default function LiveScreen() {
   const isScreenFocused = useIsFocused();
   const { m3uUrl, apiBaseUrl, epgUrl, replayServerUrl, remoteInputEnabled } = useSettingsStore();
@@ -140,18 +151,20 @@ export default function LiveScreen() {
   const [replayBlocks, setReplayBlocks] = useState<EpgProgramme[] | null>(null);
   // 节目单按天分组：当前日期下标（面板左右键切换日期）
   const [replayDateIdx, setReplayDateIdx] = useState(0);
-  const [replaySession, setReplaySession] = useState<{ url: string; title: string; channelName: string; channel: Channel; list: EpgProgramme[]; index: number } | null>(null);
+  const [replaySession, setReplaySession] = useState<ReplaySession | null>(null);
   // 回看控制条（下键呼出）：进度/暂停/倍速/上下节目，8 秒无操作自动收起
   const [replayControlsVisible, setReplayControlsVisible] = useState(false);
   const [replayProgress, setReplayProgress] = useState<{ pos: number; dur: number }>({ pos: 0, dur: 0 });
   const [replayPaused, setReplayPaused] = useState(false);
   const [replayRate, setReplayRate] = useState(1);
+  const [replayControlIndex, setReplayControlIndex] = useState(DEFAULT_REPLAY_CONTROL_INDEX);
   const replayControlsRef = useRef(false);
   replayControlsRef.current = replayControlsVisible;
+  const replayControlIndexRef = useRef(DEFAULT_REPLAY_CONTROL_INDEX);
   const playerControlRef = useRef<LivePlayerControlRef>(null);
   const controlsHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const replayCursorRef = useRef(0);
-  const replayListRef = useRef<FlashList<EpgProgramme>>(null);
+  const replayListRef = useRef<FlatList<EpgProgramme>>(null);
   // handleTVEvent 的 useCallback 依赖不含这些 state，闭包通过 ref 读最新值
   const replayChannelRef = useRef<Channel | null>(null);
   const replayProgrammesRef = useRef<EpgProgramme[]>([]);
@@ -160,7 +173,9 @@ export default function LiveScreen() {
   const replayFullListRef = useRef<EpgProgramme[]>([]);
   const replayCoverageRef = useRef<number[] | null>(null);
   replayCoverageRef.current = replayCoverage;
-  const replaySessionRef = useRef<{ url: string; title: string; channelName: string; channel: Channel; list: EpgProgramme[]; index: number } | null>(null);
+  const replayBlocksRef = useRef<EpgProgramme[] | null>(null);
+  replayBlocksRef.current = replayBlocks;
+  const replaySessionRef = useRef<ReplaySession | null>(null);
   const epgDataRef = useRef<EpgData | null>(null);
   const epgLoadStateRef = useRef<"idle" | "loading" | "ready" | "failed">("idle");
   const epgLoadStartedAtRef = useRef(0);
@@ -444,23 +459,25 @@ export default function LiveScreen() {
   replayProgrammesRef.current = replayDayList;
 
   const closeReplay = () => {
+    replayChannelRef.current = null;
     setReplayChannel(null);
+    replayBlocksRef.current = null;
     setReplayBlocks(null);
     setReplayCoverage(null);
   };
 
-  const openReplayWithList = (channel: Channel, list: EpgProgramme[], isBlocks: boolean) => {
-    const now = Date.now();
-    let idx = list.findIndex((p) => p.start <= now && now < p.stop);
-    if (idx === -1) {
-      for (let i = list.length - 1; i >= 0; i--) {
-        if (list[i].stop <= now) {
-          idx = i;
-          break;
-        }
-      }
-      if (idx === -1) idx = 0;
+  const openReplayWithList = (
+    channel: Channel,
+    list: EpgProgramme[],
+    isBlocks: boolean,
+    preferredIndex?: number
+  ) => {
+    if (list.length === 0) {
+      Toast.show({ type: "info", text1: "该频道暂无可显示的节目" });
+      return;
     }
+    const now = Date.now();
+    const idx = findReplayGuideIndex(list, now, preferredIndex);
     // 定位到光标节目所在的日期，光标改为当日列表内的下标
     const dayKey = dayKeyOf(list[idx].start);
     const dates = [...new Set(list.map((p) => dayKeyOf(p.start)))];
@@ -471,7 +488,9 @@ export default function LiveScreen() {
     const cursor = Math.max(0, dayList.indexOf(list[idx]));
     replayCursorRef.current = cursor;
     setReplayCursor(cursor);
-    setReplayBlocks(isBlocks ? list : null);
+    replayBlocksRef.current = isBlocks ? list : null;
+    setReplayBlocks(replayBlocksRef.current);
+    replayChannelRef.current = channel;
     setReplayChannel(channel);
     // 录制频道的 EPG 面板：拉录像覆盖，给有录像的节目行打「回看」标
     setReplayCoverage(null);
@@ -590,7 +609,7 @@ export default function LiveScreen() {
     try {
       replayListRef.current?.scrollToIndex({ index: next, animated: false, viewPosition: 0.5 });
     } catch {
-      // FlashList 尚未挂载时忽略
+      // 节目表列表尚未挂载时忽略
     }
   };
 
@@ -614,25 +633,64 @@ export default function LiveScreen() {
       return;
     }
     const url = buildReplayUrl(serverUrl, channel.name, prog.start, prog.stop);
-    setReplaySession({
+    const sessionList = list ?? replayFullListRef.current;
+    const safeList = sessionList.length > 0 ? sessionList : [prog];
+    const resolvedIndex = index ?? safeList.indexOf(prog);
+    const session: ReplaySession = {
       url,
       title: prog.title,
       channelName: channel.name,
       channel,
-      list: list ?? [prog],
-      index: index ?? 0,
-    });
+      list: safeList,
+      index: resolvedIndex >= 0 ? resolvedIndex : 0,
+      isBlocks: replayBlocksRef.current !== null,
+    };
+    replaySessionRef.current = session;
+    setReplaySession(session);
+    replayControlsRef.current = false;
+    setReplayControlsVisible(false);
+    replayControlIndexRef.current = DEFAULT_REPLAY_CONTROL_INDEX;
+    setReplayControlIndex(DEFAULT_REPLAY_CONTROL_INDEX);
+    setReplayRate(1);
+    setReplayProgress({ pos: 0, dur: 0 });
     closeReplay();
   };
 
-  // 回看播放中按左右键：切到当前频道的上一个/下一个可回看节目
-  // 回看控制条：呼出并重置 8 秒自动收起计时
-  const showReplayControls = () => {
-    setReplayControlsVisible(true);
-    if (controlsHideTimer.current) clearTimeout(controlsHideTimer.current);
-    controlsHideTimer.current = setTimeout(() => setReplayControlsVisible(false), 8000);
+  const hideReplayControls = () => {
+    replayControlsRef.current = false;
+    setReplayControlsVisible(false);
+    if (controlsHideTimer.current) {
+      clearTimeout(controlsHideTimer.current);
+      controlsHideTimer.current = null;
+    }
   };
 
+  // 回看控制条：TV 端只改变 JS 虚拟光标，不让 Android 原生焦点离开播放器锚点。
+  const showReplayControls = () => {
+    if (!replaySessionRef.current) return;
+    if (!replayControlsRef.current) {
+      replayControlIndexRef.current = DEFAULT_REPLAY_CONTROL_INDEX;
+      setReplayControlIndex(DEFAULT_REPLAY_CONTROL_INDEX);
+      const snapshot = playerControlRef.current?.getStatusSnapshot();
+      if (snapshot) {
+        setReplayProgress({ pos: snapshot.positionMillis, dur: snapshot.durationMillis });
+        setReplayPaused(!snapshot.isPlaying);
+      }
+    }
+    replayControlsRef.current = true;
+    setReplayControlsVisible(true);
+    if (controlsHideTimer.current) clearTimeout(controlsHideTimer.current);
+    controlsHideTimer.current = setTimeout(hideReplayControls, 8000);
+  };
+
+  const moveReplayControl = (delta: number) => {
+    const next = moveReplayControlIndex(replayControlIndexRef.current, delta);
+    replayControlIndexRef.current = next;
+    setReplayControlIndex(next);
+    showReplayControls();
+  };
+
+  // 回看播放中切到当前频道的上一个/下一个可回看节目
   const stepReplayProgramme = (delta: number) => {
     const sess = replaySessionRef.current;
     if (!sess) return;
@@ -649,7 +707,37 @@ export default function LiveScreen() {
     const serverUrl = useSettingsStore.getState().replayServerUrl;
     if (!serverUrl) return;
     const url = buildReplayUrl(serverUrl, sess.channel.name, prog.start, prog.stop);
-    setReplaySession({ ...sess, url, title: prog.title, index: ni });
+    const nextSession = { ...sess, url, title: prog.title, index: ni };
+    replaySessionRef.current = nextSession;
+    setReplaySession(nextSession);
+    setReplayRate(1);
+    setReplayProgress({ pos: 0, dur: 0 });
+  };
+
+  const runReplayControl = () => {
+    showReplayControls();
+    switch (replayControlIndexRef.current) {
+      case 0:
+        stepReplayProgramme(-1);
+        break;
+      case 1:
+        void playerControlRef.current?.seekBy(-10_000);
+        break;
+      case 2:
+        void playerControlRef.current?.togglePlayPause();
+        break;
+      case 3:
+        void playerControlRef.current?.seekBy(30_000);
+        break;
+      case 4:
+        stepReplayProgramme(1);
+        break;
+      case 5:
+        void playerControlRef.current?.cycleRate().then((rate) => {
+          if (rate) setReplayRate(rate);
+        });
+        break;
+    }
   };
 
   // 收藏/取消收藏并给出反馈
@@ -717,19 +805,26 @@ export default function LiveScreen() {
     return () => clearTimeout(t);
   }, [isChannelListVisible]);
 
-  // 播放回看中按返回键：控制条开着先收控制条，否则退出回看回到直播（拦截系统返回）
+  // 回看路径统一拦截系统返回：节目表 → 控制条 → 回看会话，按当前最上层状态关闭。
+  // 节目表不再依赖 Android Dialog 的 onRequestClose，因此这里也是 APK 的唯一返回入口。
   useEffect(() => {
-    if (!isScreenFocused || !replaySession) return;
+    if (!isScreenFocused || (!replaySession && !replayChannel)) return;
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
-      if (replayControlsRef.current) {
-        setReplayControlsVisible(false);
+      if (replayChannelRef.current) {
+        closeReplay();
         return true;
       }
+      if (replayControlsRef.current) {
+        hideReplayControls();
+        return true;
+      }
+      replaySessionRef.current = null;
       setReplaySession(null);
       return true;
     });
     return () => sub.remove();
-  }, [isScreenFocused, replaySession]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isScreenFocused, replaySession, replayChannel]);
 
   // 回看节目单打开时滚动到光标位置（当前节目）
   useEffect(() => {
@@ -738,7 +833,7 @@ export default function LiveScreen() {
       try {
         replayListRef.current?.scrollToIndex({ index: replayCursorRef.current, animated: false, viewPosition: 0.5 });
       } catch {
-        // FlashList 尚未挂载时忽略
+        // 节目表列表尚未挂载时忽略
       }
     }, 200);
     return () => clearTimeout(t);
@@ -768,13 +863,18 @@ export default function LiveScreen() {
     setIsSearchFocused(false);
     setIsChannelListVisible(false);
     setReplayChannel(null);
+    replayBlocksRef.current = null;
     setReplayBlocks(null);
+    replaySessionRef.current = null;
     setReplaySession(null);
+    hideReplayControls();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isScreenFocused, isChannelListVisible, replayChannel]);
   useEffect(
     () => () => {
       stopFast();
       if (titleTimer.current) clearTimeout(titleTimer.current);
+      if (controlsHideTimer.current) clearTimeout(controlsHideTimer.current);
     },
     []
   );
@@ -782,7 +882,9 @@ export default function LiveScreen() {
   const handleSelectChannel = (channel: Channel) => {
     const globalIndex = channels.findIndex((c) => c.id === channel.id);
     if (globalIndex !== -1) {
+      replaySessionRef.current = null;
       setReplaySession(null); // 换台即退出回看
+      hideReplayControls();
       setCurrentChannelIndex(globalIndex);
       showChannelTitle(buildChannelDisplayTitle(channel));
       setIsChannelListVisible(false);
@@ -902,10 +1004,17 @@ export default function LiveScreen() {
         return;
       }
 
-      // 回看控制条打开时：方向键交给系统焦点在按钮间移动，确认键原生触发按钮；
-      // 菜单/返回键只收起控制条（不退出回看）
+      // 回看控制条打开时由 JS 自管虚拟光标。按钮是纯视觉 View，Android 焦点始终
+      // 留在播放器锚点，避免播放状态回调与原生 requestFocus 交叉修改焦点树。
       if (replayControlsRef.current) {
-        if (type === "menu" || type === "contextMenu" || type === "back") setReplayControlsVisible(false);
+        if (type === "left") moveReplayControl(-1);
+        else if (type === "right") moveReplayControl(1);
+        else if (type === "select" || type === "playPause") {
+          if (action !== 0) runReplayControl();
+        } else if (type === "down") showReplayControls();
+        else if (type === "up" || type === "menu" || type === "contextMenu" || type === "back") {
+          hideReplayControls();
+        }
         return;
       }
 
@@ -914,9 +1023,7 @@ export default function LiveScreen() {
         // 菜单键退出回看，加载失败时确认键重试当前流
         if (type === "down") {
           if (replaySessionRef.current) {
-            // 回看播放中下键 = 呼出播放控制条。注意：此盒子下键挂载 Modal 弹层
-            // 会与原生焦点移动竞态必崩（已取证），控制条是无 Modal 的轻量覆盖层，
-            // 且不改动焦点锚点，是安全路径。
+            writeBreadcrumb("replayControls:show");
             showReplayControls();
             return;
           }
@@ -931,10 +1038,15 @@ export default function LiveScreen() {
           else changeChannel("next");
         } else if (type === "up") cycleResizeModeWithToast();
         else if (type === "menu" || type === "contextMenu") {
-          // 菜单键：回看时开回看台节目单（接着选下一集）；直播时开当前台节目表
+          // 回看时直接复用会话内已解析的节目表，并定位到当前回看节目；不重新等待
+          // EPG 下载/解析，也不因 EPG 缓存刷新而显示空表。
           const sess = replaySessionRef.current;
-          const ch = sess ? sess.channel : allChannelsRef.current[currentIndexRef.current];
-          if (ch) openProgrammeGuide(ch);
+          if (sess) {
+            openReplayWithList(sess.channel, sess.list, sess.isBlocks, sess.index);
+          } else {
+            const channel = allChannelsRef.current[currentIndexRef.current];
+            if (channel) openProgrammeGuide(channel);
+          }
         }
         else if ((type === "select" || type === "playPause") && playbackFailedRef.current) {
           setRetryKey((k) => k + 1);
@@ -1022,8 +1134,8 @@ export default function LiveScreen() {
             // 崩溃埋点：播放器异常/播完事件（只记异常态，不记常规进度）
             if (s?.didJustFinish) writeBreadcrumb("playerEvt:finished");
             else if (!s?.isLoaded || s?.error) writeBreadcrumb(`playerEvt:${s?.error ? "error" : "notLoaded"}`);
-            // 回看控制条的进度/暂停态数据源
-            if (s?.isLoaded && replaySessionRef.current) {
+            // 控制条隐藏时只在播放器内部保存状态，不让 1 秒进度事件重渲染整个直播页。
+            if (s?.isLoaded && replaySessionRef.current && replayControlsRef.current) {
               setReplayProgress({ pos: s.positionMillis ?? 0, dur: s.durationMillis ?? 0 });
               setReplayPaused(!s.isPlaying);
             }
@@ -1039,7 +1151,7 @@ export default function LiveScreen() {
       )}
       {/* 全屏播放器本身没有可聚焦控件；保留一个透明 TV 焦点锚点，确保进入页面后
           遥控器事件稳定落在直播页面。方向键仍统一由 handleTVEvent 处理。 */}
-      {deviceType === "tv" && !isChannelListVisible && !replayChannel && (
+      {deviceType === "tv" && !isChannelListVisible && (
         <Pressable
           focusable
           hasTVPreferredFocus
@@ -1058,8 +1170,7 @@ export default function LiveScreen() {
           </Text>
         </View>
       )}
-      {/* 回看播放控制条（下键呼出）：进度/快退快进/暂停/倍速/上下节目。
-          无 Modal 的轻量覆盖层，方向键走系统焦点（避开下键挂载 Modal 的原生竞态崩溃） */}
+      {/* TV 端按钮仅作视觉展示，遥控事件由 handleTVEvent 统一处理；不创建原生焦点节点。 */}
       {replaySession && replayControlsVisible && (
         <View style={styles.replayControls}>
           <View style={styles.replayCtrlProgressBg}>
@@ -1078,8 +1189,13 @@ export default function LiveScreen() {
           <Text style={styles.replayCtrlTime}>
             {`${formatMillis(replayProgress.pos)} / ${formatMillis(replayProgress.dur)}`}
           </Text>
+          {deviceType === "tv" && (
+            <Text style={styles.replayCtrlHint}>左右键选择 · 确认键执行 · 上键/返回键收起</Text>
+          )}
           <View style={styles.replayCtrlRow}>
             <MediaButton
+              tvManaged={deviceType === "tv"}
+              isSelected={deviceType === "tv" && replayControlIndex === 0}
               onPress={() => {
                 showReplayControls();
                 stepReplayProgramme(-1);
@@ -1088,6 +1204,8 @@ export default function LiveScreen() {
               <SkipBack color="white" size={22} />
             </MediaButton>
             <MediaButton
+              tvManaged={deviceType === "tv"}
+              isSelected={deviceType === "tv" && replayControlIndex === 1}
               onPress={() => {
                 showReplayControls();
                 void playerControlRef.current?.seekBy(-10000);
@@ -1096,7 +1214,8 @@ export default function LiveScreen() {
               <Rewind color="white" size={22} />
             </MediaButton>
             <MediaButton
-              hasTVPreferredFocus
+              tvManaged={deviceType === "tv"}
+              isSelected={deviceType === "tv" && replayControlIndex === 2}
               onPress={() => {
                 showReplayControls();
                 void playerControlRef.current?.togglePlayPause();
@@ -1105,6 +1224,8 @@ export default function LiveScreen() {
               {replayPaused ? <Play color="white" size={22} /> : <Pause color="white" size={22} />}
             </MediaButton>
             <MediaButton
+              tvManaged={deviceType === "tv"}
+              isSelected={deviceType === "tv" && replayControlIndex === 3}
               onPress={() => {
                 showReplayControls();
                 void playerControlRef.current?.seekBy(30000);
@@ -1113,6 +1234,8 @@ export default function LiveScreen() {
               <FastForward color="white" size={22} />
             </MediaButton>
             <MediaButton
+              tvManaged={deviceType === "tv"}
+              isSelected={deviceType === "tv" && replayControlIndex === 4}
               onPress={() => {
                 showReplayControls();
                 stepReplayProgramme(1);
@@ -1121,6 +1244,8 @@ export default function LiveScreen() {
               <SkipForward color="white" size={22} />
             </MediaButton>
             <MediaButton
+              tvManaged={deviceType === "tv"}
+              isSelected={deviceType === "tv" && replayControlIndex === 5}
               timeLabel={replayRate !== 1 ? `${replayRate}x` : undefined}
               onPress={async () => {
                 showReplayControls();
@@ -1284,33 +1409,31 @@ export default function LiveScreen() {
           </View>
         </View>
       </Modal>
-      {/* 节目表：频道表里按菜单键打开；有录像的频道才允许确认回看已播节目 */}
-      <Modal
-        animationType="slide"
-        transparent={true}
-        visible={!!replayChannel}
-        onRequestClose={closeReplay}
-      >
-        <View style={dynamicStyles.modalContainer}>
+      {/* 回看节目表留在当前 ReactRootView 内，不创建 Android Dialog，也不切换原生焦点。
+          约几十条的日节目单使用固定行高 FlatList，避免 FlashList 测量竞态。 */}
+      {replayChannel && (
+        <View style={[dynamicStyles.modalContainer, styles.inlineGuideContainer]}>
           <View style={dynamicStyles.modalContent}>
-            {/* 焦点陷阱：与频道表同一套自管按键方案（handleTVEvent） */}
-            <Pressable focusable hasTVPreferredFocus style={styles.focusTrap} />
             <Text style={styles.replayTitle} numberOfLines={1}>
-              {replayChannel
-                ? `${replayChannel.name} · ${replayDates[replayDateIdx] ? replayDayLabel(replayDates[replayDateIdx]) : "节目单"}`
-                : ""}
+              {`${replayChannel.name} · ${replayDates[replayDateIdx] ? replayDayLabel(replayDates[replayDateIdx]) : "节目单"}`}
             </Text>
             <Text style={styles.replayHint}>
-              {replayChannel && replayServerUrl && recordedChannels.has(replayChannel.name)
+              {replayServerUrl && recordedChannels.has(replayChannel.name)
                 ? "左右键切换日期 · 确认键回看已播节目 · 菜单键/返回键关闭"
                 : "左右键切换日期 · 该频道仅提供节目表 · 菜单键/返回键关闭"}
             </Text>
-            <FlashList
+            <FlatList
               ref={replayListRef}
               data={replayDayList}
-              keyExtractor={(item, index) => `${item.start}-${index}`}
+              keyExtractor={(item) => `${item.channel}-${item.start}-${item.stop}`}
               extraData={`${replayCursor}-${replayDateIdx}-${replayCoverage?.length ?? "x"}`}
-              estimatedItemSize={40}
+              getItemLayout={(_data, index) => ({ length: 40, offset: 40 * index, index })}
+              initialNumToRender={20}
+              ListEmptyComponent={
+                <View style={styles.emptyResult}>
+                  <Text style={styles.emptyResultText}>该日期暂无节目</Text>
+                </View>
+              }
               renderItem={({ item, index }) => {
                 const isCursor = index === replayCursor;
                 const now = Date.now();
@@ -1324,7 +1447,12 @@ export default function LiveScreen() {
                 const showReplayBadge = isRecordedChan && playable && covered;
                 const dimmed = !playable || (isRecordedChan && playable && !covered);
                 return (
-                  <Pressable focusable={deviceType !== "tv"} onPress={() => playReplay(item)}>
+                  <Pressable
+                    focusable={deviceType !== "tv"}
+                    onPress={() =>
+                      playReplay(item, replayFullListRef.current, replayFullListRef.current.indexOf(item))
+                    }
+                  >
                     <View style={[dynamicStyles.channelRow, { height: 40 }, isCursor && styles.rowActive]}>
                       <Text
                         numberOfLines={1}
@@ -1344,7 +1472,7 @@ export default function LiveScreen() {
             />
           </View>
         </View>
-      </Modal>
+      )}
       <RemoteControlModal />
     </>
   );
@@ -1501,6 +1629,12 @@ const styles = StyleSheet.create({
     marginTop: 6,
     textAlign: "center",
   },
+  replayCtrlHint: {
+    color: "#aaa",
+    fontSize: 11,
+    marginTop: 3,
+    textAlign: "center",
+  },
   replayCtrlRow: {
     flexDirection: "row",
     justifyContent: "center",
@@ -1553,6 +1687,11 @@ const styles = StyleSheet.create({
     textShadowColor: "rgba(0, 0, 0, 0.8)",
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 4,
+  },
+  inlineGuideContainer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 40,
+    elevation: 40,
   },
 });
 
