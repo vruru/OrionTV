@@ -1245,7 +1245,7 @@ export default function LiveScreen() {
                             {/* 左边固定槽位：NAS 确认有录像的频道才显示「回看」标 */}
                             <View style={styles.badgeSlotLeft}>
                               {replayServerUrl && recordedChannels.has(item.name) ? (
-                                <Text style={styles.catchupBadge}>回看</Text>
+                                <Text style={styles.catchupBadge} numberOfLines={1}>回看</Text>
                               ) : null}
                             </View>
                             {isPlaying && <View style={styles.playingDot} />}
@@ -1262,7 +1262,7 @@ export default function LiveScreen() {
                             </Text>
                             {/* 右边固定位置：有 EPG 节目表的频道显示「节目表」标 */}
                             {epgChannelNames.has(item.name) ? (
-                              <Text style={styles.epgBadge}>节目表</Text>
+                              <Text style={styles.epgBadge} numberOfLines={1}>节目表</Text>
                             ) : null}
                           </View>
                         </Pressable>
@@ -1336,7 +1336,7 @@ export default function LiveScreen() {
                       >
                         {`${formatReplayRowTime(item)}  ${item.title}${onAir ? "（正在播）" : ""}`}
                       </Text>
-                      {showReplayBadge ? <Text style={styles.catchupBadge}>回看</Text> : null}
+                      {showReplayBadge ? <Text style={styles.catchupBadge} numberOfLines={1}>回看</Text> : null}
                     </View>
                   </Pressable>
                 );
@@ -1509,7 +1509,7 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
   },
   badgeSlotLeft: {
-    width: 34,
+    width: 40,
     marginRight: 2,
     alignItems: "flex-start",
   },
