@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { View, FlatList, StyleSheet, ActivityIndicator, Modal, useTVEventHandler, HWEvent, Text, TextInput, Pressable, BackHandler } from "react-native";
+import { View, FlatList, StyleSheet, ActivityIndicator, Modal, useTVEventHandler, HWEvent, Text, TextInput, Pressable, BackHandler, Platform } from "react-native";
 import { useIsFocused } from "@react-navigation/native";
 import { FlashList } from "@shopify/flash-list";
 import Toast from "react-native-toast-message";
@@ -28,8 +28,12 @@ import {
 import Logger from "@/utils/Logger";
 import { writeBreadcrumb } from "@/utils/crashReport";
 import {
+  clampReplayPosition,
   DEFAULT_REPLAY_CONTROL_INDEX,
   findReplayGuideIndex,
+  getReplayLongSeekStep,
+  getReplayPositionFromTrack,
+  getReplayProgressPercent,
   hasReplayCoverage,
   moveReplayControlIndex,
 } from "@/utils/replayUi";
@@ -39,6 +43,11 @@ import ResponsiveNavigation from "@/components/navigation/ResponsiveNavigation";
 import ResponsiveHeader from "@/components/navigation/ResponsiveHeader";
 
 const logger = Logger.withTag("LiveScreen");
+
+const REPLAY_SEEK_COMMIT_DELAY_MS = 450;
+const REPLAY_SEEK_HOLD_TICK_MS = 180;
+const REPLAY_SEEK_HOLD_WATCHDOG_MS = 12_000;
+const REPLAY_SEEK_END_GUARD_MS = 1_000;
 
 // 收藏分组的固定名称：有收藏时排在分组列表第一位
 const FAVORITES_GROUP = "我的收藏";
@@ -93,7 +102,7 @@ const formatReplayRowTime = (p: EpgProgramme): string => {
 
 // 毫秒 → "mm:ss" 或 "h:mm:ss"（回看控制条时间显示）
 const formatMillis = (ms: number): string => {
-  const total = Math.floor((ms || 0) / 1000);
+  const total = Math.max(0, Math.floor((Number.isFinite(ms) ? ms : 0) / 1000));
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
   const s = total % 60;
@@ -169,6 +178,8 @@ export default function LiveScreen() {
   const responsiveConfig = useResponsiveLayout();
   const commonStyles = getCommonResponsiveStyles(responsiveConfig);
   const { deviceType, spacing } = responsiveConfig;
+  // deviceType 只决定布局；宽屏平板也可能被归为 tv，输入能力必须读真实平台。
+  const isTVDevice = Platform.isTV;
 
   const [channels, setChannels] = useState<Channel[]>([]);
   const [groupedChannels, setGroupedChannels] = useState<Record<string, Channel[]>>({});
@@ -197,12 +208,34 @@ export default function LiveScreen() {
   // 回看控制条（下键呼出）：进度/暂停/倍速/上下节目，8 秒无操作自动收起
   const [replayControlsVisible, setReplayControlsVisible] = useState(false);
   const [replayProgress, setReplayProgress] = useState<{ pos: number; dur: number }>({ pos: 0, dur: 0 });
+  const replayProgressRef = useRef({ pos: 0, dur: 0 });
+  replayProgressRef.current = replayProgress;
   const [replayPaused, setReplayPaused] = useState(false);
   const [replayRate, setReplayRate] = useState(1);
   const [replayControlIndex, setReplayControlIndex] = useState(DEFAULT_REPLAY_CONTROL_INDEX);
+  // 控制条打开后默认选中时间轴：遥控左右键可直接定位；下键再进入原按钮区。
+  const [replayTimelineSelected, setReplayTimelineSelected] = useState(true);
+  const [replaySeekPreview, setReplaySeekPreview] = useState<number | null>(null);
   const replayControlsRef = useRef(false);
   replayControlsRef.current = replayControlsVisible;
   const replayControlIndexRef = useRef(DEFAULT_REPLAY_CONTROL_INDEX);
+  const replayTimelineSelectedRef = useRef(true);
+  replayTimelineSelectedRef.current = replayTimelineSelected;
+  const replaySeekPreviewRef = useRef<number | null>(null);
+  const replaySeekCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const replaySeekHoldIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const replaySeekHoldWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const replaySeekHoldStartedAtRef = useRef(0);
+  const replaySeekHoldDirectionRef = useRef<-1 | 1 | 0>(0);
+  const replaySeekHoldEventTypeRef = useRef<"longLeft" | "longRight" | "longSelect" | "touch" | null>(null);
+  const replayTrackDraggingRef = useRef(false);
+  const replayProgressTrackWidthRef = useRef(0);
+  const replaySeekCommitTokenRef = useRef(0);
+  const replaySeekInFlightRef = useRef<{
+    target: number;
+    promise: Promise<number | null>;
+  } | null>(null);
+  const lastTouchLongSeekRef = useRef(0);
   const playerControlRef = useRef<LivePlayerControlRef>(null);
   // 清单校验、旧播放器释放、URL 提交必须串行；token 使关闭面板后的迟到结果自动失效。
   const replayTransitionTokenRef = useRef(0);
@@ -680,6 +713,7 @@ export default function LiveScreen() {
   ) => {
     if (replayTransitionBusyRef.current) return;
     replayTransitionBusyRef.current = true;
+    cancelReplaySeekInteraction();
     const token = replayTransitionTokenRef.current + 1;
     replayTransitionTokenRef.current = token;
     writeBreadcrumb("replay:manifestCheck");
@@ -721,8 +755,11 @@ export default function LiveScreen() {
         setReplayControlsVisible(false);
         replayControlIndexRef.current = DEFAULT_REPLAY_CONTROL_INDEX;
         setReplayControlIndex(DEFAULT_REPLAY_CONTROL_INDEX);
+        replayTimelineSelectedRef.current = true;
+        setReplayTimelineSelected(true);
       }
       setReplayRate(1);
+      replayProgressRef.current = { pos: 0, dur: 0 };
       setReplayProgress({ pos: 0, dur: 0 });
       if (options.closeGuide) closeReplay(false);
     } finally {
@@ -764,14 +801,266 @@ export default function LiveScreen() {
     void activateReplaySession(session, { closeGuide: true, resetControls: true });
   };
 
-  const hideReplayControls = () => {
+  function clearReplaySeekTimers() {
+    if (replaySeekCommitTimerRef.current) {
+      clearTimeout(replaySeekCommitTimerRef.current);
+      replaySeekCommitTimerRef.current = null;
+    }
+    if (replaySeekHoldIntervalRef.current) {
+      clearInterval(replaySeekHoldIntervalRef.current);
+      replaySeekHoldIntervalRef.current = null;
+    }
+    if (replaySeekHoldWatchdogRef.current) {
+      clearTimeout(replaySeekHoldWatchdogRef.current);
+      replaySeekHoldWatchdogRef.current = null;
+    }
+    replaySeekHoldDirectionRef.current = 0;
+    replaySeekHoldEventTypeRef.current = null;
+  }
+
+  function cancelReplaySeekInteraction() {
+    clearReplaySeekTimers();
+    replayTrackDraggingRef.current = false;
+    replaySeekCommitTokenRef.current += 1;
+    replaySeekInFlightRef.current = null;
+    replaySeekPreviewRef.current = null;
+    setReplaySeekPreview(null);
+  }
+
+  function armReplayControlsHideTimer() {
+    if (controlsHideTimer.current) clearTimeout(controlsHideTimer.current);
+    controlsHideTimer.current = null;
+    // 长按定位期间绝不能让控制条在手指/按键尚未松开时消失。
+    if (
+      !replayControlsRef.current ||
+      replaySeekHoldDirectionRef.current !== 0 ||
+      replayTrackDraggingRef.current
+    ) {
+      return;
+    }
+    controlsHideTimer.current = setTimeout(hideReplayControls, 8000);
+  }
+
+  function hideReplayControls(commitPending = false) {
+    const shouldCommit =
+      commitPending &&
+      replaySeekPreviewRef.current !== null &&
+      !!replaySessionRef.current &&
+      !replayTransitionBusyRef.current;
     replayControlsRef.current = false;
     setReplayControlsVisible(false);
+    replayTrackDraggingRef.current = false;
+    if (shouldCommit) {
+      clearReplaySeekTimers();
+      void commitReplaySeekPreview();
+    } else {
+      cancelReplaySeekInteraction();
+    }
     if (controlsHideTimer.current) {
       clearTimeout(controlsHideTimer.current);
       controlsHideTimer.current = null;
     }
-  };
+  }
+
+  // 回看控制条打开后默认落在进度条。遥控器无需先移动到快进按钮，左右键即可定位。
+  function showReplayControls() {
+    if (!replaySessionRef.current) return;
+    if (!replayControlsRef.current) {
+      replayControlIndexRef.current = DEFAULT_REPLAY_CONTROL_INDEX;
+      setReplayControlIndex(DEFAULT_REPLAY_CONTROL_INDEX);
+      replayTimelineSelectedRef.current = true;
+      setReplayTimelineSelected(true);
+      const snapshot = playerControlRef.current?.getStatusSnapshot();
+      if (snapshot) {
+        setReplayProgress({ pos: snapshot.positionMillis, dur: snapshot.durationMillis });
+        setReplayPaused(!snapshot.isPlaying);
+      }
+    }
+    replayControlsRef.current = true;
+    setReplayControlsVisible(true);
+    armReplayControlsHideTimer();
+  }
+
+  function getReplayTimelineState() {
+    const snapshot = playerControlRef.current?.getStatusSnapshot();
+    const duration = snapshot?.durationMillis ?? replayProgressRef.current.dur;
+    const position =
+      replaySeekPreviewRef.current ?? snapshot?.positionMillis ?? replayProgressRef.current.pos;
+    if (!Number.isFinite(duration) || duration <= 0) return null;
+    return { duration, position: clampReplayPosition(position, duration) };
+  }
+
+  function setReplaySeekPreviewPosition(position: number, duration: number) {
+    if (!Number.isFinite(duration) || duration <= 0) return false;
+    const end = duration > REPLAY_SEEK_END_GUARD_MS ? duration - REPLAY_SEEK_END_GUARD_MS : duration;
+    const target = Math.min(end, clampReplayPosition(position, duration));
+    replaySeekPreviewRef.current = target;
+    setReplaySeekPreview(target);
+    return true;
+  }
+
+  function previewReplaySeekBy(deltaMs: number) {
+    if (replayTransitionBusyRef.current || !Number.isFinite(deltaMs)) return false;
+    showReplayControls();
+    const timeline = getReplayTimelineState();
+    if (!timeline) return false;
+    return setReplaySeekPreviewPosition(timeline.position + deltaMs, timeline.duration);
+  }
+
+  function previewReplayTimelineStep(direction: -1 | 1, holdElapsedMs = 0) {
+    const timeline = getReplayTimelineState();
+    if (!timeline) return false;
+    const step = getReplayLongSeekStep(timeline.duration, holdElapsedMs);
+    if (step <= 0) return false;
+    return setReplaySeekPreviewPosition(timeline.position + direction * step, timeline.duration);
+  }
+
+  async function commitReplaySeekPreview() {
+    if (replaySeekCommitTimerRef.current) {
+      clearTimeout(replaySeekCommitTimerRef.current);
+      replaySeekCommitTimerRef.current = null;
+    }
+    const target = replaySeekPreviewRef.current;
+    const sessionUrl = replaySessionRef.current?.url;
+    if (target === null || !sessionUrl) return;
+
+    // 同一目标已在原生 seek 中时复用 Promise。这样紧接着按返回/上键隐藏控制条，
+    // 不会把相同目标再塞进 ExoPlayer 造成第二次 decoder flush。
+    const existingSeek = replaySeekInFlightRef.current;
+    let seekPromise: Promise<number | null>;
+    if (existingSeek?.target === target) {
+      seekPromise = existingSeek.promise;
+    } else {
+      seekPromise = playerControlRef.current?.seekTo(target) ?? Promise.resolve(null);
+      const entry = { target, promise: seekPromise };
+      replaySeekInFlightRef.current = entry;
+      void seekPromise.finally(() => {
+        if (replaySeekInFlightRef.current === entry) {
+          replaySeekInFlightRef.current = null;
+        }
+      });
+    }
+
+    const commitToken = replaySeekCommitTokenRef.current + 1;
+    replaySeekCommitTokenRef.current = commitToken;
+    const actualPosition = await seekPromise;
+    if (
+      replaySeekCommitTokenRef.current !== commitToken ||
+      replaySessionRef.current?.url !== sessionUrl
+    ) {
+      return;
+    }
+
+    // 提交期间若用户又移动了预览，保留新目标，旧 Promise 不能把它覆盖掉。
+    if (replaySeekPreviewRef.current === target) {
+      replaySeekPreviewRef.current = null;
+      setReplaySeekPreview(null);
+    }
+    const snapshot = playerControlRef.current?.getStatusSnapshot();
+    const duration = snapshot?.durationMillis ?? replayProgressRef.current.dur;
+    const position = actualPosition ?? snapshot?.positionMillis ?? target;
+    if (Number.isFinite(duration) && duration > 0) {
+      setReplayProgress({ pos: clampReplayPosition(position, duration), dur: duration });
+    }
+    armReplayControlsHideTimer();
+  }
+
+  function scheduleReplaySeekCommit(delayMs = REPLAY_SEEK_COMMIT_DELAY_MS) {
+    if (replaySeekCommitTimerRef.current) clearTimeout(replaySeekCommitTimerRef.current);
+    replaySeekCommitTimerRef.current = setTimeout(() => {
+      replaySeekCommitTimerRef.current = null;
+      void commitReplaySeekPreview();
+    }, delayMs);
+    armReplayControlsHideTimer();
+  }
+
+  function nudgeReplayTimeline(direction: -1 | 1) {
+    showReplayControls();
+    replayTimelineSelectedRef.current = true;
+    setReplayTimelineSelected(true);
+    if (previewReplayTimelineStep(direction)) scheduleReplaySeekCommit();
+  }
+
+  function startReplaySeekHold(
+    direction: -1 | 1,
+    eventType: "longLeft" | "longRight" | "longSelect" | "touch"
+  ) {
+    if (replayTransitionBusyRef.current || replaySeekHoldDirectionRef.current !== 0) return;
+    showReplayControls();
+    replayTimelineSelectedRef.current = true;
+    setReplayTimelineSelected(true);
+    clearReplaySeekTimers();
+    if (!previewReplayTimelineStep(direction, 0)) {
+      armReplayControlsHideTimer();
+      return;
+    }
+    replaySeekHoldDirectionRef.current = direction;
+    replaySeekHoldEventTypeRef.current = eventType;
+    replaySeekHoldStartedAtRef.current = Date.now();
+    if (controlsHideTimer.current) {
+      clearTimeout(controlsHideTimer.current);
+      controlsHideTimer.current = null;
+    }
+    replaySeekHoldIntervalRef.current = setInterval(() => {
+      previewReplayTimelineStep(direction, Date.now() - replaySeekHoldStartedAtRef.current);
+    }, REPLAY_SEEK_HOLD_TICK_MS);
+    // 个别遥控器断连时可能丢失 key-up；看门狗保证不会留下永久 interval。
+    replaySeekHoldWatchdogRef.current = setTimeout(() => {
+      stopReplaySeekHold(
+        !!replaySessionRef.current && !replayTransitionBusyRef.current
+      );
+    }, REPLAY_SEEK_HOLD_WATCHDOG_MS);
+  }
+
+  function stopReplaySeekHold(commit: boolean) {
+    const wasHolding = replaySeekHoldDirectionRef.current !== 0;
+    clearReplaySeekTimers();
+    if (commit && (wasHolding || replaySeekPreviewRef.current !== null)) {
+      void commitReplaySeekPreview();
+    } else {
+      armReplayControlsHideTimer();
+    }
+  }
+
+  function previewReplayTrackPosition(locationX: number) {
+    showReplayControls();
+    replayTimelineSelectedRef.current = true;
+    setReplayTimelineSelected(true);
+    const timeline = getReplayTimelineState();
+    if (!timeline) return;
+    const target = getReplayPositionFromTrack(
+      locationX,
+      replayProgressTrackWidthRef.current,
+      timeline.duration
+    );
+    if (target !== null) setReplaySeekPreviewPosition(target, timeline.duration);
+  }
+
+  function beginReplayTrackInteraction(locationX: number) {
+    // 进入拖动即取消按钮留下的 debounce；拖动期间只更新预览，松手才原生 seek 一次。
+    clearReplaySeekTimers();
+    replaySeekCommitTokenRef.current += 1;
+    replayTrackDraggingRef.current = true;
+    if (controlsHideTimer.current) {
+      clearTimeout(controlsHideTimer.current);
+      controlsHideTimer.current = null;
+    }
+    previewReplayTrackPosition(locationX);
+  }
+
+  function finishReplayTrackInteraction() {
+    replayTrackDraggingRef.current = false;
+    if (replaySeekPreviewRef.current !== null) void commitReplaySeekPreview();
+    else armReplayControlsHideTimer();
+  }
+
+  function terminateReplayTrackInteraction() {
+    // responder 被系统/父视图夺走属于取消，不等同于用户松手确认。
+    replayTrackDraggingRef.current = false;
+    replaySeekPreviewRef.current = null;
+    setReplaySeekPreview(null);
+    armReplayControlsHideTimer();
+  }
 
   const exitReplaySession = () => {
     if (!replaySessionRef.current) return;
@@ -787,24 +1076,6 @@ export default function LiveScreen() {
       setReplayPaused(false);
       replayTransitionBusyRef.current = false;
     });
-  };
-
-  // 回看控制条：TV 端只改变 JS 虚拟光标，不让 Android 原生焦点离开播放器锚点。
-  const showReplayControls = () => {
-    if (!replaySessionRef.current) return;
-    if (!replayControlsRef.current) {
-      replayControlIndexRef.current = DEFAULT_REPLAY_CONTROL_INDEX;
-      setReplayControlIndex(DEFAULT_REPLAY_CONTROL_INDEX);
-      const snapshot = playerControlRef.current?.getStatusSnapshot();
-      if (snapshot) {
-        setReplayProgress({ pos: snapshot.positionMillis, dur: snapshot.durationMillis });
-        setReplayPaused(!snapshot.isPlaying);
-      }
-    }
-    replayControlsRef.current = true;
-    setReplayControlsVisible(true);
-    if (controlsHideTimer.current) clearTimeout(controlsHideTimer.current);
-    controlsHideTimer.current = setTimeout(hideReplayControls, 8000);
   };
 
   const moveReplayControl = (delta: number) => {
@@ -846,13 +1117,13 @@ export default function LiveScreen() {
         stepReplayProgramme(-1);
         break;
       case 1:
-        void playerControlRef.current?.seekBy(-10_000);
+        if (previewReplaySeekBy(-10_000)) scheduleReplaySeekCommit(220);
         break;
       case 2:
         void playerControlRef.current?.togglePlayPause();
         break;
       case 3:
-        void playerControlRef.current?.seekBy(30_000);
+        if (previewReplaySeekBy(30_000)) scheduleReplaySeekCommit(220);
         break;
       case 4:
         stepReplayProgramme(1);
@@ -950,7 +1221,7 @@ export default function LiveScreen() {
         return true;
       }
       if (replayControlsRef.current) {
-        hideReplayControls();
+        hideReplayControls(true);
         return true;
       }
       if (replaySessionRef.current) {
@@ -1013,6 +1284,10 @@ export default function LiveScreen() {
     () => () => {
       replayTransitionTokenRef.current += 1;
       replayTransitionBusyRef.current = false;
+      replaySeekCommitTokenRef.current += 1;
+      replaySeekInFlightRef.current = null;
+      clearReplaySeekTimers();
+      replaySeekPreviewRef.current = null;
       stopFast();
       if (titleTimer.current) clearTimeout(titleTimer.current);
       if (controlsHideTimer.current) clearTimeout(controlsHideTimer.current);
@@ -1098,11 +1373,29 @@ export default function LiveScreen() {
 
   const handleTVEvent = useCallback(
     (event: HWEvent) => {
-      if (!isScreenFocused || deviceType !== "tv") return;
-      // 搜索框聚焦时按键交给系统键盘/输入框，不做列表导航
-      if (isSearchFocused) return;
       const type = event?.eventType;
       const action = (event as any)?.eventKeyAction;
+      // 长按松手必须先清 interval；即使此刻页面失焦、键盘弹出或覆盖层刚切换，
+      // 也不能因下面的 early return 留下永久快速定位任务。
+      if (
+        action === 1 &&
+        replaySeekHoldDirectionRef.current !== 0 &&
+        replaySeekHoldEventTypeRef.current === type
+      ) {
+        if (type === "longSelect") lastLongSelectRef.current = Date.now();
+        stopReplaySeekHold(
+          isScreenFocused &&
+            !!replaySessionRef.current &&
+            !replayTransitionBusyRef.current
+        );
+        return;
+      }
+      if (!isScreenFocused || !isTVDevice) return;
+      // 当前 RN-tvos 默认只派发普通按键的 key-up；若以后启用 key-down 事件，
+      // 也统一等松键再执行，避免一次 Down/Up 穿过两个控制层造成双动作。
+      if (action === 0 && !type?.startsWith("long")) return;
+      // 搜索框聚焦时按键交给系统键盘/输入框，不做列表导航
+      if (isSearchFocused) return;
 
       // 回看节目单面板打开时接管按键：上下选节目、确认回看、菜单/返回关闭
       if (replayChannelRef.current) {
@@ -1145,16 +1438,61 @@ export default function LiveScreen() {
         return;
       }
 
-      // 回看控制条打开时由 JS 自管虚拟光标。按钮是纯视觉 View，Android 焦点始终
-      // 留在播放器锚点，避免播放状态回调与原生 requestFocus 交叉修改焦点树。
+      // 回看控制条由 JS 自管两个区域：默认时间轴可直接定位，下键进入原按钮区。
+      // 两块都只是视觉 View，Android 原生焦点始终留在唯一播放器锚点。
       if (replayControlsRef.current) {
-        if (type === "left") moveReplayControl(-1);
-        else if (type === "right") moveReplayControl(1);
-        else if (type === "select" || type === "playPause") {
-          if (action !== 0) runReplayControl();
+        if (replayTimelineSelectedRef.current) {
+          if (type === "left" && action !== 0) nudgeReplayTimeline(-1);
+          else if (type === "right" && action !== 0) nudgeReplayTimeline(1);
+          else if (type === "longLeft" || type === "longRight") {
+            const direction: -1 | 1 = type === "longLeft" ? -1 : 1;
+            if (action === 0) startReplaySeekHold(direction, type);
+            else if (
+              action === undefined &&
+              replaySeekHoldDirectionRef.current === 0
+            ) {
+              // 极少数遥控器不提供 key-up，不能启动无限 interval；退化为一次粗调。
+              nudgeReplayTimeline(direction);
+            }
+          } else if ((type === "select" || type === "playPause") && action !== 0) {
+            if (replaySeekPreviewRef.current !== null) void commitReplaySeekPreview();
+            else void playerControlRef.current?.togglePlayPause();
+          } else if (type === "down") {
+            if (replaySeekPreviewRef.current !== null) void commitReplaySeekPreview();
+            replayTimelineSelectedRef.current = false;
+            setReplayTimelineSelected(false);
+            replayControlIndexRef.current = DEFAULT_REPLAY_CONTROL_INDEX;
+            setReplayControlIndex(DEFAULT_REPLAY_CONTROL_INDEX);
+            showReplayControls();
+          } else if (type === "up" || type === "menu" || type === "contextMenu" || type === "back") {
+            hideReplayControls(true);
+          }
+        } else if (type === "left" && action !== 0) moveReplayControl(-1);
+        else if (type === "right" && action !== 0) moveReplayControl(1);
+        else if (type === "longSelect") {
+          const index = replayControlIndexRef.current;
+          if (index === 1 || index === 3) {
+            const direction: -1 | 1 = index === 1 ? -1 : 1;
+            if (action === 0) {
+              lastLongSelectRef.current = Date.now();
+              startReplaySeekHold(direction, "longSelect");
+            } else if (
+              action === undefined &&
+              replaySeekHoldDirectionRef.current === 0
+            ) {
+              lastLongSelectRef.current = Date.now();
+              nudgeReplayTimeline(direction);
+            }
+          }
+        } else if (type === "select" || type === "playPause") {
+          if (action !== 0 && Date.now() - lastLongSelectRef.current >= 600) runReplayControl();
+        } else if (type === "up") {
+          replayTimelineSelectedRef.current = true;
+          setReplayTimelineSelected(true);
+          showReplayControls();
         } else if (type === "down") showReplayControls();
-        else if (type === "up" || type === "menu" || type === "contextMenu" || type === "back") {
-          hideReplayControls();
+        else if (type === "menu" || type === "contextMenu" || type === "back") {
+          hideReplayControls(true);
         }
         return;
       }
@@ -1170,11 +1508,21 @@ export default function LiveScreen() {
           }
           setIsChannelListVisible(true);
         }
-        else if (type === "left") {
+        else if ((type === "longLeft" || type === "longRight") && replaySessionRef.current) {
+          const direction: -1 | 1 = type === "longLeft" ? -1 : 1;
+          if (action === 0) startReplaySeekHold(direction, type);
+          else if (
+            action === undefined &&
+            replaySeekHoldDirectionRef.current === 0
+          ) {
+            nudgeReplayTimeline(direction);
+          }
+        }
+        else if (type === "left" && action !== 0) {
           // 回看播放中：左右键切上/下一个回看节目；直播时才是换台
           if (replaySessionRef.current) stepReplayProgramme(-1);
           else changeChannel("prev");
-        } else if (type === "right") {
+        } else if (type === "right" && action !== 0) {
           if (replaySessionRef.current) stepReplayProgramme(1);
           else changeChannel("next");
         } else if (type === "up") cycleResizeModeWithToast();
@@ -1255,13 +1603,15 @@ export default function LiveScreen() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [isScreenFocused, deviceType, isChannelListVisible, isSearchFocused, changeChannel]
+    [isScreenFocused, isTVDevice, isChannelListVisible, isSearchFocused, changeChannel]
   );
 
   useTVEventHandler(handleTVEvent);
 
   // 动态样式
   const dynamicStyles = createResponsiveStyles(deviceType, spacing);
+  const replayDisplayPosition = replaySeekPreview ?? replayProgress.pos;
+  const replayDisplayPercent = getReplayProgressPercent(replayDisplayPosition, replayProgress.dur);
 
   const renderLiveContent = () => (
     <>
@@ -1277,7 +1627,13 @@ export default function LiveScreen() {
             else if (!s?.isLoaded || s?.error) writeBreadcrumb(`playerEvt:${s?.error ? "error" : "notLoaded"}`);
             // 控制条隐藏时只在播放器内部保存状态，不让 1 秒进度事件重渲染整个直播页。
             if (s?.isLoaded && replaySessionRef.current && replayControlsRef.current) {
-              setReplayProgress({ pos: s.positionMillis ?? 0, dur: s.durationMillis ?? 0 });
+              const duration = s.durationMillis ?? replayProgressRef.current.dur;
+              // 拖动/长按期间保留 JS 预览目标，播放器迟到的 1Hz 状态不能把光标拉回。
+              if (replaySeekPreviewRef.current === null) {
+                setReplayProgress({ pos: s.positionMillis ?? 0, dur: duration });
+              } else if (duration !== replayProgressRef.current.dur) {
+                setReplayProgress((current) => ({ ...current, dur: duration }));
+              }
               setReplayPaused(!s.isPlaying);
             }
           }}
@@ -1292,14 +1648,13 @@ export default function LiveScreen() {
       )}
       {/* 全屏播放器本身没有可聚焦控件；保留一个透明 TV 焦点锚点，确保进入页面后
           遥控器事件稳定落在直播页面。方向键仍统一由 handleTVEvent 处理。 */}
-      {deviceType === "tv" && !isChannelListVisible && (
+      {isTVDevice && !isChannelListVisible && (
         <Pressable
           focusable
           hasTVPreferredFocus
           style={styles.playerFocusAnchor}
-          onPress={() => {
-            if (playbackFailedRef.current) setRetryKey((k) => k + 1);
-          }}
+          // 这里只负责兜住原生 TV 焦点；确认键业务统一由 handleTVEvent 执行。
+          onPress={() => undefined}
         />
       )}
       {/* 回看播放中：右上角常驻水印式标志（镂空透明，不挡画面与台标位） */}
@@ -1311,32 +1666,75 @@ export default function LiveScreen() {
           </Text>
         </View>
       )}
+      {/* 触摸设备点一下画面呼出控制条；TV 继续完全由遥控器事件管理。 */}
+      {replaySession &&
+        !isTVDevice &&
+        !replayControlsVisible &&
+        !playbackFailed &&
+        !isChannelListVisible &&
+        !replayChannel && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="显示回看控制条"
+            style={styles.replayTouchControlsOpener}
+            onPress={showReplayControls}
+          />
+        )}
       {/* TV 端按钮仅作视觉展示，遥控事件由 handleTVEvent 统一处理；不创建原生焦点节点。 */}
       {replaySession && replayControlsVisible && (
         <View style={styles.replayControls}>
-          <View style={styles.replayCtrlProgressBg}>
+          <View
+            focusable={false}
+            accessible
+            accessibilityRole="adjustable"
+            accessibilityLabel="回看进度"
+            accessibilityValue={{
+              min: 0,
+              max: Math.max(0, replayProgress.dur),
+              now: replayDisplayPosition,
+              text: `${formatMillis(replayDisplayPosition)} / ${formatMillis(replayProgress.dur)}`,
+            }}
+            style={[
+              styles.replayCtrlProgressHitArea,
+              isTVDevice && replayTimelineSelected && styles.replayCtrlProgressSelected,
+            ]}
+            onLayout={(event) => {
+              replayProgressTrackWidthRef.current = event.nativeEvent.layout.width;
+            }}
+            onStartShouldSetResponder={() => !isTVDevice}
+            onMoveShouldSetResponder={() => !isTVDevice}
+            onResponderGrant={(event) => beginReplayTrackInteraction(event.nativeEvent.locationX)}
+            onResponderMove={(event) => previewReplayTrackPosition(event.nativeEvent.locationX)}
+            onResponderRelease={finishReplayTrackInteraction}
+            onResponderTerminate={terminateReplayTrackInteraction}
+          >
+            <View style={styles.replayCtrlProgressBg}>
+              <View
+                style={[styles.replayCtrlProgressFill, { width: `${replayDisplayPercent}%` }]}
+              />
+            </View>
             <View
-              style={[
-                styles.replayCtrlProgressFill,
-                {
-                  width:
-                    replayProgress.dur > 0
-                      ? `${Math.min(100, (replayProgress.pos / replayProgress.dur) * 100)}%`
-                      : "0%",
-                },
-              ]}
+              pointerEvents="none"
+              style={[styles.replayCtrlProgressThumb, { left: `${replayDisplayPercent}%` }]}
             />
           </View>
           <Text style={styles.replayCtrlTime}>
-            {`${formatMillis(replayProgress.pos)} / ${formatMillis(replayProgress.dur)}`}
+            {`${replaySeekPreview !== null ? "定位至 " : ""}${formatMillis(replayDisplayPosition)} / ${formatMillis(replayProgress.dur)}`}
           </Text>
-          {deviceType === "tv" && (
-            <Text style={styles.replayCtrlHint}>左右键选择 · 确认键执行 · 上键/返回键收起</Text>
+          {isTVDevice && (
+            <Text style={styles.replayCtrlHint}>
+              {replayTimelineSelected
+                ? "左右键定位 · 长按快速移动 · 松开跳转 · 下键选择按钮"
+                : "左右键选择 · 长按快退/快进可连续定位 · 上键返回进度条"}
+            </Text>
+          )}
+          {!isTVDevice && (
+            <Text style={styles.replayCtrlHint}>拖动进度条直接跳转 · 长按快退/快进按钮连续定位</Text>
           )}
           <View style={styles.replayCtrlRow}>
             <MediaButton
-              tvManaged={deviceType === "tv"}
-              isSelected={deviceType === "tv" && replayControlIndex === 0}
+              tvManaged={isTVDevice}
+              isSelected={isTVDevice && !replayTimelineSelected && replayControlIndex === 0}
               onPress={() => {
                 showReplayControls();
                 stepReplayProgramme(-1);
@@ -1345,18 +1743,30 @@ export default function LiveScreen() {
               <SkipBack color="white" size={22} />
             </MediaButton>
             <MediaButton
-              tvManaged={deviceType === "tv"}
-              isSelected={deviceType === "tv" && replayControlIndex === 1}
+              tvManaged={isTVDevice}
+              isSelected={isTVDevice && !replayTimelineSelected && replayControlIndex === 1}
+              timeLabel="-10s"
               onPress={() => {
-                showReplayControls();
-                void playerControlRef.current?.seekBy(-10000);
+                if (Date.now() - lastTouchLongSeekRef.current < 600) return;
+                if (previewReplaySeekBy(-10_000)) scheduleReplaySeekCommit(220);
+              }}
+              delayLongPress={450}
+              onLongPress={() => {
+                lastTouchLongSeekRef.current = Date.now();
+                startReplaySeekHold(-1, "touch");
+              }}
+              onPressOut={() => {
+                if (replaySeekHoldDirectionRef.current === -1) {
+                  lastTouchLongSeekRef.current = Date.now();
+                  stopReplaySeekHold(true);
+                }
               }}
             >
               <Rewind color="white" size={22} />
             </MediaButton>
             <MediaButton
-              tvManaged={deviceType === "tv"}
-              isSelected={deviceType === "tv" && replayControlIndex === 2}
+              tvManaged={isTVDevice}
+              isSelected={isTVDevice && !replayTimelineSelected && replayControlIndex === 2}
               onPress={() => {
                 showReplayControls();
                 void playerControlRef.current?.togglePlayPause();
@@ -1365,18 +1775,30 @@ export default function LiveScreen() {
               {replayPaused ? <Play color="white" size={22} /> : <Pause color="white" size={22} />}
             </MediaButton>
             <MediaButton
-              tvManaged={deviceType === "tv"}
-              isSelected={deviceType === "tv" && replayControlIndex === 3}
+              tvManaged={isTVDevice}
+              isSelected={isTVDevice && !replayTimelineSelected && replayControlIndex === 3}
+              timeLabel="+30s"
               onPress={() => {
-                showReplayControls();
-                void playerControlRef.current?.seekBy(30000);
+                if (Date.now() - lastTouchLongSeekRef.current < 600) return;
+                if (previewReplaySeekBy(30_000)) scheduleReplaySeekCommit(220);
+              }}
+              delayLongPress={450}
+              onLongPress={() => {
+                lastTouchLongSeekRef.current = Date.now();
+                startReplaySeekHold(1, "touch");
+              }}
+              onPressOut={() => {
+                if (replaySeekHoldDirectionRef.current === 1) {
+                  lastTouchLongSeekRef.current = Date.now();
+                  stopReplaySeekHold(true);
+                }
               }}
             >
               <FastForward color="white" size={22} />
             </MediaButton>
             <MediaButton
-              tvManaged={deviceType === "tv"}
-              isSelected={deviceType === "tv" && replayControlIndex === 4}
+              tvManaged={isTVDevice}
+              isSelected={isTVDevice && !replayTimelineSelected && replayControlIndex === 4}
               onPress={() => {
                 showReplayControls();
                 stepReplayProgramme(1);
@@ -1385,8 +1807,8 @@ export default function LiveScreen() {
               <SkipForward color="white" size={22} />
             </MediaButton>
             <MediaButton
-              tvManaged={deviceType === "tv"}
-              isSelected={deviceType === "tv" && replayControlIndex === 5}
+              tvManaged={isTVDevice}
+              isSelected={isTVDevice && !replayTimelineSelected && replayControlIndex === 5}
               timeLabel={replayRate !== 1 ? `${replayRate}x` : undefined}
               onPress={async () => {
                 showReplayControls();
@@ -1400,7 +1822,7 @@ export default function LiveScreen() {
         </View>
       )}
       {/* 移动端/平板：加载失败时点按重试（TV 端走确认键） */}
-      {playbackFailed && deviceType !== "tv" && (
+      {playbackFailed && !isTVDevice && (
         <Pressable style={styles.retryTouchOverlay} onPress={() => setRetryKey((k) => k + 1)} />
       )}
       {isLoading && channels.length === 0 && (
@@ -1418,7 +1840,7 @@ export default function LiveScreen() {
         </View>
       )}
       <LiveOverlayHost
-        isTV={deviceType === "tv"}
+        isTV={isTVDevice}
         visible={isChannelListVisible}
         onRequestClose={() => setIsChannelListVisible(false)}
         onShow={() => writeBreadcrumb("channelList shown")}
@@ -1427,14 +1849,18 @@ export default function LiveScreen() {
           <View style={dynamicStyles.modalContent}>
             {/* 焦点陷阱：唯一可聚焦元素，兜住焦点避免系统焦点乱跳。
                 按键处理（含确认键）统一在 handleTVEvent 里完成。 */}
-            <Pressable focusable hasTVPreferredFocus style={styles.focusTrap} />
+            <Pressable
+              focusable={isTVDevice}
+              hasTVPreferredFocus={isTVDevice}
+              style={styles.focusTrap}
+            />
             {/* 搜索行：移动端直接点按输入；TV 端光标在首行时再按上键聚焦，
                 也可扫码用手机远程输入。 */}
             <View style={dynamicStyles.searchRow}>
               <TextInput
                 ref={searchInputRef}
                 style={dynamicStyles.searchInput}
-                placeholder={deviceType === "tv" ? "搜索频道（拼音/首字母 · 首行按上键输入）" : "搜索频道（拼音 / 首字母）"}
+                placeholder={isTVDevice ? "搜索频道（拼音/首字母 · 首行按上键输入）" : "搜索频道（拼音 / 首字母）"}
                 placeholderTextColor="#888"
                 value={searchKeyword}
                 onChangeText={setSearchKeyword}
@@ -1494,7 +1920,7 @@ export default function LiveScreen() {
                         // TV 端行不可聚焦（焦点由陷阱视图 + handleTVEvent 自管），
                         // 移动端/平板端通过 onPress 触摸选台、长按收藏。
                         <Pressable
-                          focusable={deviceType !== "tv"}
+                          focusable={!isTVDevice}
                           onPress={() => handleSelectChannel(item)}
                           onLongPress={() => {
                             void toggleFavoriteAndToast(item);
@@ -1538,10 +1964,10 @@ export default function LiveScreen() {
               </View>
             </View>
             <Text style={[styles.replayHint, { marginTop: 8, marginBottom: 0 }]}>
-              {deviceType === "tv" ? "确认键播放 · 菜单键打开节目表 · 长按确认键收藏" : "点按播放 · 长按收藏"}
+              {isTVDevice ? "确认键播放 · 菜单键打开节目表 · 长按确认键收藏" : "点按播放 · 长按收藏"}
             </Text>
             {/* EPG 加载诊断：三轮盲调后把真实错误搬上屏幕，便于对症 */}
-            {deviceType === "tv" && epgUrl.trim() !== "" && epgLoadState !== "ready" && (
+            {isTVDevice && epgUrl.trim() !== "" && epgLoadState !== "ready" && (
               <Text style={styles.epgDiagText}>
                 {`节目表：${epgLoadState === "loading" ? "加载中…" : epgLoadState === "failed" ? "加载失败" : "未加载"} · ${epgUrl.trim()}${getEpgLastError() ? " · " + getEpgLastError() : ""}`}
               </Text>
@@ -1593,7 +2019,7 @@ export default function LiveScreen() {
                 const dimmed = !playable || (isRecordedChan && playable && !covered);
                 return (
                   <Pressable
-                    focusable={deviceType !== "tv"}
+                    focusable={!isTVDevice}
                     onPress={() =>
                       playReplay(item, replayFullListRef.current, replayFullListRef.current.indexOf(item))
                     }
@@ -1683,6 +2109,9 @@ const styles = StyleSheet.create({
   retryTouchOverlay: {
     ...StyleSheet.absoluteFillObject,
   },
+  replayTouchControlsOpener: {
+    ...StyleSheet.absoluteFillObject,
+  },
   rowActive: {
     backgroundColor: Colors.dark.primary,
     borderRadius: 6,
@@ -1757,6 +2186,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingVertical: 12,
   },
+  replayCtrlProgressHitArea: {
+    height: 28,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: "transparent",
+    justifyContent: "center",
+  },
+  replayCtrlProgressSelected: {
+    borderColor: "#9ec9ff",
+    backgroundColor: "rgba(158, 201, 255, 0.14)",
+  },
   replayCtrlProgressBg: {
     height: 6,
     borderRadius: 3,
@@ -1766,6 +2206,17 @@ const styles = StyleSheet.create({
   replayCtrlProgressFill: {
     height: 6,
     borderRadius: 3,
+    backgroundColor: "#9ec9ff",
+  },
+  replayCtrlProgressThumb: {
+    position: "absolute",
+    top: 8,
+    width: 12,
+    height: 12,
+    marginLeft: -6,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: "#fff",
     backgroundColor: "#9ec9ff",
   },
   replayCtrlTime: {

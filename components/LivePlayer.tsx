@@ -19,7 +19,8 @@ interface LivePlayerProps {
 export interface LivePlayerControlRef {
   /** 在父级切换直播/回看 URL 前串行释放旧播放器，并屏蔽迟到状态回调。 */
   prepareForSourceChange: () => Promise<void>;
-  seekBy: (deltaMs: number) => Promise<void>;
+  /** 绝对定位；连续请求只保留最新目标，避免 ExoPlayer 并发 seek。 */
+  seekTo: (positionMs: number) => Promise<number | null>;
   togglePlayPause: () => Promise<void>;
   cycleRate: () => Promise<number>;
   getStatusSnapshot: () => { positionMillis: number; durationMillis: number; isPlaying: boolean } | null;
@@ -42,6 +43,11 @@ const LivePlayer = forwardRef<LivePlayerControlRef, LivePlayerProps>(function Li
   // 最近一次播放状态（seek/暂停/倍速的命令式控制读取用）
   const statusRef = useRef<AVPlaybackStatus | null>(null);
   const rateRef = useRef(1);
+  // seek 采用 single-flight + latest-wins：至多一个原生 setPositionAsync 在途，
+  // 长按/拖动产生的新目标只覆盖 pending，不把一串解码器 flush 堆进 ExoPlayer。
+  const pendingSeekTargetRef = useRef<number | null>(null);
+  const seekDrainRef = useRef<Promise<void> | null>(null);
+  const seekWaitersRef = useRef<((position: number | null) => void)[]>([]);
   const activeSourceKey = `${streamUrl ?? "none"}-${retryKey}`;
   // 旧 VideoView 卸载后仍可能送达迟到回调；只接受当前 source 代次。
   const sourceKeyRef = useRef(activeSourceKey);
@@ -54,22 +60,70 @@ const LivePlayer = forwardRef<LivePlayerControlRef, LivePlayerProps>(function Li
   const videoResizeMode = useSettingsStore((s) => s.videoResizeMode);
   useKeepAwake();
 
+  const resolveSeekWaiters = (position: number | null) => {
+    const waiters = seekWaitersRef.current.splice(0);
+    for (const resolve of waiters) resolve(position);
+  };
+
+  const ensureSeekDrain = (sourceKey: string) => {
+    if (seekDrainRef.current) return;
+    const drain = (async () => {
+      let lastPosition: number | null = null;
+      while (sourceKeyRef.current === sourceKey) {
+        const next = pendingSeekTargetRef.current;
+        if (next === null) break;
+        pendingSeekTargetRef.current = null;
+        const nextStatus = await video.current?.setPositionAsync(next).catch(() => undefined);
+        if (sourceKeyRef.current !== sourceKey) break;
+        if (nextStatus?.isLoaded) {
+          statusRef.current = nextStatus;
+          lastPosition = nextStatus.positionMillis ?? next;
+        } else {
+          lastPosition = null;
+        }
+      }
+      resolveSeekWaiters(sourceKeyRef.current === sourceKey ? lastPosition : null);
+    })();
+    seekDrainRef.current = drain;
+    void drain.finally(() => {
+      if (seekDrainRef.current === drain) seekDrainRef.current = null;
+      // 极窄竞态：新请求可能在旧 Promise resolve 后、finally 前到达。
+      if (pendingSeekTargetRef.current !== null && sourceKeyRef.current === sourceKey) {
+        ensureSeekDrain(sourceKey);
+      }
+    });
+  };
+
+  const seekToPosition = (positionMs: number): Promise<number | null> => {
+    const status = statusRef.current;
+    if (!status || !status.isLoaded || !Number.isFinite(positionMs)) return Promise.resolve(null);
+    const duration = status.durationMillis ?? 0;
+    if (!Number.isFinite(duration) || duration <= 0) return Promise.resolve(null);
+
+    const sourceKey = sourceKeyRef.current;
+    const target = Math.max(0, Math.min(duration, positionMs));
+    return new Promise<number | null>((resolve) => {
+      pendingSeekTargetRef.current = target;
+      seekWaitersRef.current.push(resolve);
+      ensureSeekDrain(sourceKey);
+    });
+  };
+
   useImperativeHandle(ref, () => ({
     prepareForSourceChange: async () => {
       // 先置为哨兵，unload 过程中到达的旧状态不会再写入页面状态。
+      const activeSeek = seekDrainRef.current;
       sourceKeyRef.current = "releasing";
       statusRef.current = null;
+      pendingSeekTargetRef.current = null;
       hasPlaybackStartedRef.current = false;
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      // setPositionAsync 与 unloadAsync 不能并发打进同一个 ExoPlayer 实例。
+      await activeSeek?.catch(() => undefined);
+      if (!activeSeek) resolveSeekWaiters(null);
       await video.current?.unloadAsync().catch(() => undefined);
     },
-    seekBy: async (deltaMs: number) => {
-      const st = statusRef.current;
-      if (!st || !st.isLoaded) return;
-      const dur = st.durationMillis ?? 0;
-      const next = Math.max(0, Math.min(dur, (st.positionMillis ?? 0) + deltaMs));
-      await video.current?.setPositionAsync(next).catch(() => undefined);
-    },
+    seekTo: seekToPosition,
     togglePlayPause: async () => {
       const st = statusRef.current;
       if (!st || !st.isLoaded) return;
@@ -122,6 +176,15 @@ const LivePlayer = forwardRef<LivePlayerControlRef, LivePlayerProps>(function Li
     };
     // retryKey 变化时重走加载流程（Video 以 key 强制重挂载）
   }, [streamUrl, retryKey]);
+
+  useEffect(
+    () => () => {
+      sourceKeyRef.current = "unmounted";
+      pendingSeekTargetRef.current = null;
+      resolveSeekWaiters(null);
+    },
+    []
+  );
 
   // 失败状态变化（含超时路径）统一上报外部
   useEffect(() => {

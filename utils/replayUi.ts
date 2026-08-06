@@ -11,6 +11,64 @@ export const moveReplayControlIndex = (current: number, delta: number): number =
 };
 
 /**
+ * 把播放器上报的位置限制在有效时间轴内。坏状态回调不能把 NaN/Infinity
+ * 继续传给样式或原生 seek API；时长未知时统一回到 0。
+ */
+export const clampReplayPosition = (position: number, duration: number): number => {
+  if (!Number.isFinite(duration) || duration <= 0 || !Number.isFinite(position)) return 0;
+  return Math.max(0, Math.min(duration, position));
+};
+
+/** 返回控制条可直接使用的 0..100 百分比。 */
+export const getReplayProgressPercent = (position: number, duration: number): number => {
+  if (!Number.isFinite(duration) || duration <= 0) return 0;
+  return (clampReplayPosition(position, duration) / duration) * 100;
+};
+
+/**
+ * 把点击/拖动的横坐标换算成回看位置。轨道以外的有限坐标会吸附到首尾；
+ * 非有限坐标、零宽轨道或无效时长无法定位，返回 null。
+ */
+export const getReplayPositionFromTrack = (
+  locationX: number,
+  width: number,
+  duration: number
+): number | null => {
+  if (
+    !Number.isFinite(locationX) ||
+    !Number.isFinite(width) ||
+    width <= 0 ||
+    !Number.isFinite(duration) ||
+    duration <= 0
+  ) {
+    return null;
+  }
+
+  const ratio = Math.max(0, Math.min(1, locationX / width));
+  return ratio * duration;
+};
+
+const REPLAY_BASE_SEEK_STEP_MS = 30_000;
+const REPLAY_MEDIUM_SEEK_STEP_MS = 2 * 60_000;
+const REPLAY_FAST_SEEK_STEP_MS = 5 * 60_000;
+
+/**
+ * 普通按键及长按连续定位的单步距离。长按 1 秒后加速到 2 分钟，3 秒后
+ * 加速到 5 分钟；任何一步都不会超过当前有效时长。
+ */
+export const getReplayLongSeekStep = (duration: number, elapsed: number): number => {
+  if (!Number.isFinite(duration) || duration <= 0) return 0;
+  const safeElapsed = Number.isFinite(elapsed) && elapsed >= 0 ? elapsed : 0;
+  const step =
+    safeElapsed >= 3_000
+      ? REPLAY_FAST_SEEK_STEP_MS
+      : safeElapsed >= 1_000
+        ? REPLAY_MEDIUM_SEEK_STEP_MS
+        : REPLAY_BASE_SEEK_STEP_MS;
+  return Math.min(duration, step);
+};
+
+/**
  * 打开节目表时选中哪一条：回看会话优先定位当前播放节目；普通打开则定位
  * 正在播的节目，其次最后一个已播节目，最后才是第一条未来节目。
  */

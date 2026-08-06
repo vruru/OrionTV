@@ -1,6 +1,10 @@
 import {
+  clampReplayPosition,
   DEFAULT_REPLAY_CONTROL_INDEX,
   findReplayGuideIndex,
+  getReplayLongSeekStep,
+  getReplayPositionFromTrack,
+  getReplayProgressPercent,
   hasReplayCoverage,
   moveReplayControlIndex,
 } from "../replayUi";
@@ -20,6 +24,110 @@ describe("replayUi", () => {
     it("损坏的光标值回退到暂停键", () => {
       expect(moveReplayControlIndex(Number.NaN, 1)).toBe(DEFAULT_REPLAY_CONTROL_INDEX);
     });
+  });
+
+  describe("clampReplayPosition", () => {
+    it("保留时间轴内的位置并钳制首尾越界", () => {
+      expect(clampReplayPosition(30_000, 120_000)).toBe(30_000);
+      expect(clampReplayPosition(-1, 120_000)).toBe(0);
+      expect(clampReplayPosition(120_001, 120_000)).toBe(120_000);
+      expect(clampReplayPosition(120_000, 120_000)).toBe(120_000);
+    });
+
+    it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+      "无效位置 %s 安全回到 0",
+      (position) => {
+        expect(clampReplayPosition(position, 120_000)).toBe(0);
+      }
+    );
+
+    it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+      "无效时长 %s 安全回到 0",
+      (duration) => {
+        expect(clampReplayPosition(30_000, duration)).toBe(0);
+      }
+    );
+  });
+
+  describe("getReplayProgressPercent", () => {
+    it("计算并钳制 0..100 的进度", () => {
+      expect(getReplayProgressPercent(30_000, 120_000)).toBe(25);
+      expect(getReplayProgressPercent(-1, 120_000)).toBe(0);
+      expect(getReplayProgressPercent(120_000, 120_000)).toBe(100);
+      expect(getReplayProgressPercent(180_000, 120_000)).toBe(100);
+    });
+
+    it("位置或时长损坏时不产生 NaN/Infinity 百分比", () => {
+      expect(getReplayProgressPercent(Number.NaN, 120_000)).toBe(0);
+      expect(getReplayProgressPercent(Number.POSITIVE_INFINITY, 120_000)).toBe(0);
+      expect(getReplayProgressPercent(30_000, 0)).toBe(0);
+      expect(getReplayProgressPercent(30_000, Number.NaN)).toBe(0);
+      expect(getReplayProgressPercent(30_000, Number.POSITIVE_INFINITY)).toBe(0);
+    });
+  });
+
+  describe("getReplayPositionFromTrack", () => {
+    it("按轨道横坐标定位播放时间", () => {
+      expect(getReplayPositionFromTrack(50, 200, 120_000)).toBe(30_000);
+      expect(getReplayPositionFromTrack(0, 200, 120_000)).toBe(0);
+      expect(getReplayPositionFromTrack(200, 200, 120_000)).toBe(120_000);
+    });
+
+    it("轨道外的有限坐标吸附到首尾", () => {
+      expect(getReplayPositionFromTrack(-20, 200, 120_000)).toBe(0);
+      expect(getReplayPositionFromTrack(250, 200, 120_000)).toBe(120_000);
+    });
+
+    it.each([
+      [Number.NaN, 200, 120_000],
+      [Number.POSITIVE_INFINITY, 200, 120_000],
+      [50, Number.NaN, 120_000],
+      [50, Number.POSITIVE_INFINITY, 120_000],
+      [50, 0, 120_000],
+      [50, -200, 120_000],
+      [50, 200, Number.NaN],
+      [50, 200, Number.POSITIVE_INFINITY],
+      [50, 200, 0],
+      [50, 200, -120_000],
+    ])("无效参数 (%s, %s, %s) 返回 null", (locationX, width, duration) => {
+      expect(getReplayPositionFromTrack(locationX, width, duration)).toBeNull();
+    });
+  });
+
+  describe("getReplayLongSeekStep", () => {
+    const longDuration = 20 * 60_000;
+
+    it("普通按键和长按不足 1 秒使用 30 秒基准", () => {
+      expect(getReplayLongSeekStep(longDuration, 0)).toBe(30_000);
+      expect(getReplayLongSeekStep(longDuration, 999)).toBe(30_000);
+    });
+
+    it("在 1 秒和 3 秒边界分别加速到 2 分钟、5 分钟", () => {
+      expect(getReplayLongSeekStep(longDuration, 1_000)).toBe(120_000);
+      expect(getReplayLongSeekStep(longDuration, 2_999)).toBe(120_000);
+      expect(getReplayLongSeekStep(longDuration, 3_000)).toBe(300_000);
+      expect(getReplayLongSeekStep(longDuration, 30_000)).toBe(300_000);
+    });
+
+    it("单步不会超过有效时长", () => {
+      expect(getReplayLongSeekStep(10_000, 0)).toBe(10_000);
+      expect(getReplayLongSeekStep(60_000, 1_000)).toBe(60_000);
+      expect(getReplayLongSeekStep(180_000, 3_000)).toBe(180_000);
+    });
+
+    it("无效或负 elapsed 回退普通 30 秒步长", () => {
+      expect(getReplayLongSeekStep(longDuration, -1)).toBe(30_000);
+      expect(getReplayLongSeekStep(longDuration, Number.NaN)).toBe(30_000);
+      expect(getReplayLongSeekStep(longDuration, Number.POSITIVE_INFINITY)).toBe(30_000);
+      expect(getReplayLongSeekStep(longDuration, Number.NEGATIVE_INFINITY)).toBe(30_000);
+    });
+
+    it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+      "无效时长 %s 不产生定位步长",
+      (duration) => {
+        expect(getReplayLongSeekStep(duration, 3_000)).toBe(0);
+      }
+    );
   });
 
   describe("findReplayGuideIndex", () => {
