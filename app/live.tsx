@@ -18,10 +18,21 @@ import { matchChannelSearch } from "@/utils/pinyin";
 import { nextResizeMode, RESIZE_MODE_LABELS } from "@/utils/resizeMode";
 import { isTVLongPressStart } from "@/utils/tvRemote";
 import { EpgData, EpgProgramme, fetchEpg, getCurrentProgramme, buildEpgKeys, formatProgrammeTime, getEpgLastError } from "@/services/epg";
-import { fetchRecordedChannels, buildReplayUrl, fetchCoverage } from "@/services/replay";
+import {
+  fetchRecordedChannels,
+  buildReplayUrl,
+  fetchCoverage,
+  validateReplayManifest,
+  ReplayCoverage,
+} from "@/services/replay";
 import Logger from "@/utils/Logger";
 import { writeBreadcrumb } from "@/utils/crashReport";
-import { DEFAULT_REPLAY_CONTROL_INDEX, findReplayGuideIndex, moveReplayControlIndex } from "@/utils/replayUi";
+import {
+  DEFAULT_REPLAY_CONTROL_INDEX,
+  findReplayGuideIndex,
+  hasReplayCoverage,
+  moveReplayControlIndex,
+} from "@/utils/replayUi";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
 import ResponsiveNavigation from "@/components/navigation/ResponsiveNavigation";
@@ -115,6 +126,7 @@ interface ReplaySession {
   list: EpgProgramme[];
   index: number;
   isBlocks: boolean;
+  coverage: ReplayCoverage | null;
 }
 
 interface LiveOverlayHostProps {
@@ -175,8 +187,8 @@ export default function LiveScreen() {
   const [recordedChannels, setRecordedChannels] = useState<Set<string>>(new Set());
   const [replayChannel, setReplayChannel] = useState<Channel | null>(null);
   const [replayCursor, setReplayCursor] = useState(0);
-  // 当前面板频道的录像覆盖（分片起始时间 ms）：有覆盖的节目行才显示「回看」标
-  const [replayCoverage, setReplayCoverage] = useState<number[] | null>(null);
+  // 当前面板频道的录像覆盖（分片起点 + 服务端真实片长）：有覆盖才显示「回看」标
+  const [replayCoverage, setReplayCoverage] = useState<ReplayCoverage | null>(null);
   // 无 EPG 频道的兜底：按录制覆盖生成的小时块时段单（有值时优先于 EPG 节目单）
   const [replayBlocks, setReplayBlocks] = useState<EpgProgramme[] | null>(null);
   // 节目单按天分组：当前日期下标（面板左右键切换日期）
@@ -192,6 +204,9 @@ export default function LiveScreen() {
   replayControlsRef.current = replayControlsVisible;
   const replayControlIndexRef = useRef(DEFAULT_REPLAY_CONTROL_INDEX);
   const playerControlRef = useRef<LivePlayerControlRef>(null);
+  // 清单校验、旧播放器释放、URL 提交必须串行；token 使关闭面板后的迟到结果自动失效。
+  const replayTransitionTokenRef = useRef(0);
+  const replayTransitionBusyRef = useRef(false);
   const controlsHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const replayCursorRef = useRef(0);
   const replayListRef = useRef<FlatList<EpgProgramme>>(null);
@@ -201,7 +216,7 @@ export default function LiveScreen() {
   const replayDatesRef = useRef<string[]>([]);
   const replayDateIdxRef = useRef(0);
   const replayFullListRef = useRef<EpgProgramme[]>([]);
-  const replayCoverageRef = useRef<number[] | null>(null);
+  const replayCoverageRef = useRef<ReplayCoverage | null>(null);
   replayCoverageRef.current = replayCoverage;
   const replayBlocksRef = useRef<EpgProgramme[] | null>(null);
   replayBlocksRef.current = replayBlocks;
@@ -488,7 +503,11 @@ export default function LiveScreen() {
   }, [replayProgrammes, replayDates, replayDateIdx]);
   replayProgrammesRef.current = replayDayList;
 
-  const closeReplay = () => {
+  const closeReplay = (cancelPending = true) => {
+    if (cancelPending) {
+      replayTransitionTokenRef.current += 1;
+      replayTransitionBusyRef.current = false;
+    }
     replayChannelRef.current = null;
     setReplayChannel(null);
     replayBlocksRef.current = null;
@@ -538,15 +557,15 @@ export default function LiveScreen() {
 
   // 无 EPG 频道的降级：按录制覆盖情况生成"小时块"时段单，只保留已录完的完整小时
   const openReplayByTimeBlocks = async (channel: Channel, serverUrl: string) => {
-    const segs = await fetchCoverage(serverUrl, channel.name);
-    if (segs.length === 0) {
+    const coverage = await fetchCoverage(serverUrl, channel.name);
+    if (coverage.starts.length === 0) {
       Toast.show({ type: "info", text1: "该频道暂时没有录像", text2: "录制是滚动进行的，稍后再试" });
       return;
     }
     const hours = new Set<number>();
-    for (const s of segs) {
+    for (const s of coverage.starts) {
       hours.add(Math.floor(s / 3600000));
-      hours.add(Math.floor((s + 600000) / 3600000)); // 分片跨整点时两块都算有数据
+      hours.add(Math.floor((s + coverage.segmentDurationMs) / 3600000)); // 分片跨整点时两块都算有数据
     }
     const now = Date.now();
     const list: EpgProgramme[] = [...hours]
@@ -647,7 +666,71 @@ export default function LiveScreen() {
     }
   };
 
-  // 选中节目开始回看：只播已播完的时间窗（正在播/未播的节目没有完整录像）
+  const programmeHasCoverage = (coverage: ReplayCoverage | null, prog: EpgProgramme) =>
+    !coverage ||
+    hasReplayCoverage(coverage.starts, coverage.segmentDurationMs, prog.start, prog.stop);
+
+  /**
+   * 播放 URL 提交前先检查 m3u8 的真实分片时长，再等待旧 ExoPlayer 完整释放。
+   * 600 秒巨片会在这里被拒绝，绝不能再交给低内存电视的 SampleQueue。
+   */
+  const activateReplaySession = async (
+    session: ReplaySession,
+    options: { closeGuide: boolean; resetControls: boolean }
+  ) => {
+    if (replayTransitionBusyRef.current) return;
+    replayTransitionBusyRef.current = true;
+    const token = replayTransitionTokenRef.current + 1;
+    replayTransitionTokenRef.current = token;
+    writeBreadcrumb("replay:manifestCheck");
+
+    try {
+      const validation = await validateReplayManifest(session.url);
+      if (replayTransitionTokenRef.current !== token) return;
+
+      if (validation.status === "unsafe") {
+        writeBreadcrumb(`replay:blocked${validation.maxSegmentDurationSeconds}s`);
+        Toast.show({
+          type: "error",
+          text1: "回看源分片过大，已阻止播放",
+          text2: `${validation.maxSegmentDurationSeconds} 秒/片会导致电视内存溢出`,
+        });
+        return;
+      }
+      if (validation.status === "error") {
+        Toast.show({
+          type: "info",
+          text1: validation.error === "http" && validation.httpStatus === 404 ? "该时段没有录像" : "回看清单不可用",
+          text2: validation.message,
+        });
+        return;
+      }
+
+      writeBreadcrumb(`replay:manifestSafe${validation.maxSegmentDurationSeconds}s`);
+      await playerControlRef.current?.prepareForSourceChange();
+      if (replayTransitionTokenRef.current !== token) {
+        // 用户在旧播放器释放期间关闭了面板：让原直播 URL 重新挂载，不能留黑屏。
+        setRetryKey((key) => key + 1);
+        return;
+      }
+
+      replaySessionRef.current = session;
+      setReplaySession(session);
+      if (options.resetControls) {
+        replayControlsRef.current = false;
+        setReplayControlsVisible(false);
+        replayControlIndexRef.current = DEFAULT_REPLAY_CONTROL_INDEX;
+        setReplayControlIndex(DEFAULT_REPLAY_CONTROL_INDEX);
+      }
+      setReplayRate(1);
+      setReplayProgress({ pos: 0, dur: 0 });
+      if (options.closeGuide) closeReplay(false);
+    } finally {
+      if (replayTransitionTokenRef.current === token) replayTransitionBusyRef.current = false;
+    }
+  };
+
+  // 选中节目开始回看：只播已播完且服务端确认有短分片的时间窗。
   const playReplay = (prog: EpgProgramme, list?: EpgProgramme[], index?: number) => {
     const channel = replayChannelRef.current;
     const serverUrl = useSettingsStore.getState().replayServerUrl;
@@ -660,34 +743,25 @@ export default function LiveScreen() {
       Toast.show({ type: "info", text1: "节目尚未播完，暂不可回看" });
       return;
     }
-    // 录像覆盖判定：无覆盖的时段给出明确提示（10 分钟分片粒度）
     const coverage = replayCoverageRef.current;
-    if (coverage && !coverage.some((s) => s < prog.stop && s + 600000 > prog.start)) {
+    if (!programmeHasCoverage(coverage, prog)) {
       Toast.show({ type: "info", text1: "该时段没有录像", text2: "可能当时未开始录制或正在避让" });
       return;
     }
-    const url = buildReplayUrl(serverUrl, channel.name, prog.start, prog.stop);
     const sessionList = list ?? replayFullListRef.current;
     const safeList = sessionList.length > 0 ? sessionList : [prog];
     const resolvedIndex = index ?? safeList.indexOf(prog);
     const session: ReplaySession = {
-      url,
+      url: buildReplayUrl(serverUrl, channel.name, prog.start, prog.stop),
       title: prog.title,
       channelName: channel.name,
       channel,
       list: safeList,
       index: resolvedIndex >= 0 ? resolvedIndex : 0,
       isBlocks: replayBlocksRef.current !== null,
+      coverage,
     };
-    replaySessionRef.current = session;
-    setReplaySession(session);
-    replayControlsRef.current = false;
-    setReplayControlsVisible(false);
-    replayControlIndexRef.current = DEFAULT_REPLAY_CONTROL_INDEX;
-    setReplayControlIndex(DEFAULT_REPLAY_CONTROL_INDEX);
-    setReplayRate(1);
-    setReplayProgress({ pos: 0, dur: 0 });
-    closeReplay();
+    void activateReplaySession(session, { closeGuide: true, resetControls: true });
   };
 
   const hideReplayControls = () => {
@@ -697,6 +771,22 @@ export default function LiveScreen() {
       clearTimeout(controlsHideTimer.current);
       controlsHideTimer.current = null;
     }
+  };
+
+  const exitReplaySession = () => {
+    if (!replaySessionRef.current) return;
+    const token = replayTransitionTokenRef.current + 1;
+    replayTransitionTokenRef.current = token;
+    replayTransitionBusyRef.current = true;
+    hideReplayControls();
+    const release = playerControlRef.current?.prepareForSourceChange() ?? Promise.resolve();
+    void release.finally(() => {
+      if (replayTransitionTokenRef.current !== token) return;
+      replaySessionRef.current = null;
+      setReplaySession(null);
+      setReplayPaused(false);
+      replayTransitionBusyRef.current = false;
+    });
   };
 
   // 回看控制条：TV 端只改变 JS 虚拟光标，不让 Android 原生焦点离开播放器锚点。
@@ -738,14 +828,15 @@ export default function LiveScreen() {
       Toast.show({ type: "info", text1: "节目尚未播完，暂不可回看" });
       return;
     }
+    if (!programmeHasCoverage(sess.coverage, prog)) {
+      Toast.show({ type: "info", text1: "该时段没有录像", text2: "已保留当前回看节目" });
+      return;
+    }
     const serverUrl = useSettingsStore.getState().replayServerUrl;
     if (!serverUrl) return;
     const url = buildReplayUrl(serverUrl, sess.channel.name, prog.start, prog.stop);
     const nextSession = { ...sess, url, title: prog.title, index: ni };
-    replaySessionRef.current = nextSession;
-    setReplaySession(nextSession);
-    setReplayRate(1);
-    setReplayProgress({ pos: 0, dur: 0 });
+    void activateReplaySession(nextSession, { closeGuide: false, resetControls: false });
   };
 
   const runReplayControl = () => {
@@ -839,26 +930,38 @@ export default function LiveScreen() {
     return () => clearTimeout(t);
   }, [isChannelListVisible]);
 
-  // 回看路径统一拦截系统返回：节目表 → 控制条 → 回看会话，按当前最上层状态关闭。
-  // 节目表不再依赖 Android Dialog 的 onRequestClose，因此这里也是 APK 的唯一返回入口。
+  // 直播页统一拦截系统返回：节目表 → 搜索键盘 → 频道表 → 控制条 → 回看会话。
+  // Android KEYCODE_BACK 不会稳定进入 useTVEventHandler；漏掉频道表就会直接把任务退到后台，
+  // 视觉上与“闪退”完全一样。
   useEffect(() => {
-    if (!isScreenFocused || (!replaySession && !replayChannel)) return;
+    if (!isScreenFocused) return;
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
       if (replayChannelRef.current) {
         closeReplay();
+        return true;
+      }
+      if (isSearchFocused) {
+        searchInputRef.current?.blur();
+        setIsSearchFocused(false);
+        return true;
+      }
+      if (isChannelListVisible) {
+        setIsChannelListVisible(false);
         return true;
       }
       if (replayControlsRef.current) {
         hideReplayControls();
         return true;
       }
-      replaySessionRef.current = null;
-      setReplaySession(null);
-      return true;
+      if (replaySessionRef.current) {
+        exitReplaySession();
+        return true;
+      }
+      return false;
     });
     return () => sub.remove();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isScreenFocused, replaySession, replayChannel]);
+  }, [isScreenFocused, isSearchFocused, isChannelListVisible, replaySession, replayChannel]);
 
   // 回看节目单打开时滚动到光标位置（当前节目）
   useEffect(() => {
@@ -892,6 +995,8 @@ export default function LiveScreen() {
   // 否则会在弹层打开瞬间误清理会话并触发播放器卸载（原生 unload 崩溃高发路径）
   useEffect(() => {
     if (isScreenFocused || isChannelListVisible || replayChannel) return;
+    replayTransitionTokenRef.current += 1;
+    replayTransitionBusyRef.current = false;
     stopFast();
     searchInputRef.current?.blur();
     setIsSearchFocused(false);
@@ -906,6 +1011,8 @@ export default function LiveScreen() {
   }, [isScreenFocused, isChannelListVisible, replayChannel]);
   useEffect(
     () => () => {
+      replayTransitionTokenRef.current += 1;
+      replayTransitionBusyRef.current = false;
       stopFast();
       if (titleTimer.current) clearTimeout(titleTimer.current);
       if (controlsHideTimer.current) clearTimeout(controlsHideTimer.current);
@@ -1459,7 +1566,7 @@ export default function LiveScreen() {
               ref={replayListRef}
               data={replayDayList}
               keyExtractor={(item) => `${item.channel}-${item.start}-${item.stop}`}
-              extraData={`${replayCursor}-${replayDateIdx}-${replayCoverage?.length ?? "x"}`}
+              extraData={`${replayCursor}-${replayDateIdx}-${replayCoverage?.starts.length ?? "x"}`}
               getItemLayout={(_data, index) => ({ length: 40, offset: 40 * index, index })}
               initialNumToRender={20}
               ListEmptyComponent={
@@ -1475,7 +1582,12 @@ export default function LiveScreen() {
                 // 录像覆盖：录制频道才判定；有覆盖的已播节目打「回看」标，无覆盖置灰
                 const isRecordedChan = replayChannel ? recordedChannels.has(replayChannel.name) : false;
                 const covered = replayCoverage
-                  ? replayCoverage.some((s) => s < item.stop && s + 600000 > item.start)
+                  ? hasReplayCoverage(
+                      replayCoverage.starts,
+                      replayCoverage.segmentDurationMs,
+                      item.start,
+                      item.stop
+                    )
                   : true;
                 const showReplayBadge = isRecordedChan && playable && covered;
                 const dimmed = !playable || (isRecordedChan && playable && !covered);

@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect, useLayoutEffect, forwardRef, useImperativeHandle } from "react";
+import React, { useRef, useState, useEffect, forwardRef, useImperativeHandle } from "react";
 import { View, StyleSheet, Text, ActivityIndicator } from "react-native";
 import { Video, AVPlaybackStatus } from "expo-av";
 import { useKeepAwake } from "expo-keep-awake";
@@ -17,6 +17,8 @@ interface LivePlayerProps {
 
 /** 回看（VOD）场景的命令式控制：快进快退/暂停播放/倍速 */
 export interface LivePlayerControlRef {
+  /** 在父级切换直播/回看 URL 前串行释放旧播放器，并屏蔽迟到状态回调。 */
+  prepareForSourceChange: () => Promise<void>;
   seekBy: (deltaMs: number) => Promise<void>;
   togglePlayPause: () => Promise<void>;
   cycleRate: () => Promise<number>;
@@ -40,11 +42,27 @@ const LivePlayer = forwardRef<LivePlayerControlRef, LivePlayerProps>(function Li
   // 最近一次播放状态（seek/暂停/倍速的命令式控制读取用）
   const statusRef = useRef<AVPlaybackStatus | null>(null);
   const rateRef = useRef(1);
+  const activeSourceKey = `${streamUrl ?? "none"}-${retryKey}`;
+  // 旧 VideoView 卸载后仍可能送达迟到回调；只接受当前 source 代次。
+  const sourceKeyRef = useRef(activeSourceKey);
+  const renderedSourceKeyRef = useRef(activeSourceKey);
+  if (renderedSourceKeyRef.current !== activeSourceKey) {
+    renderedSourceKeyRef.current = activeSourceKey;
+    sourceKeyRef.current = activeSourceKey;
+  }
   // 全局画面比例设置（设置页 / TV 上键快捷切换即时生效）
   const videoResizeMode = useSettingsStore((s) => s.videoResizeMode);
   useKeepAwake();
 
   useImperativeHandle(ref, () => ({
+    prepareForSourceChange: async () => {
+      // 先置为哨兵，unload 过程中到达的旧状态不会再写入页面状态。
+      sourceKeyRef.current = "releasing";
+      statusRef.current = null;
+      hasPlaybackStartedRef.current = false;
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      await video.current?.unloadAsync().catch(() => undefined);
+    },
     seekBy: async (deltaMs: number) => {
       const st = statusRef.current;
       if (!st || !st.isLoaded) return;
@@ -75,16 +93,6 @@ const LivePlayer = forwardRef<LivePlayerControlRef, LivePlayerProps>(function Li
       };
     },
   }));
-
-  // 部分 Android TV 固件在 React 视图卸载后不会立刻释放解码器；主动 unload，
-  // 避免退出直播页后后台视频仍占用硬解/网络并持续派发状态回调。
-  useLayoutEffect(
-    () => () => {
-      const mountedVideo = video.current;
-      if (mountedVideo) void mountedVideo.unloadAsync().catch(() => undefined);
-    },
-    []
-  );
 
   useEffect(() => {
     if (timeoutRef.current) {
@@ -121,6 +129,7 @@ const LivePlayer = forwardRef<LivePlayerControlRef, LivePlayerProps>(function Li
   }, [isTimeout, onPlaybackError]);
 
   const handlePlaybackStatusUpdate = (status: AVPlaybackStatus) => {
+    if (sourceKeyRef.current !== activeSourceKey) return;
     statusRef.current = status;
     if (status.isLoaded) {
       if (status.isPlaying) {
@@ -180,6 +189,7 @@ const LivePlayer = forwardRef<LivePlayerControlRef, LivePlayerProps>(function Li
         progressUpdateIntervalMillis={1000}
         onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
         onError={(e) => {
+          if (sourceKeyRef.current !== activeSourceKey) return;
           setIsTimeout(true);
           setIsLoading(false);
         }}

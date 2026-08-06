@@ -1,6 +1,7 @@
 import {
   DEFAULT_REPLAY_CONTROL_INDEX,
   findReplayGuideIndex,
+  hasReplayCoverage,
   moveReplayControlIndex,
 } from "../replayUi";
 
@@ -46,6 +47,25 @@ describe("replayUi", () => {
 
     it("空节目表返回 -1", () => {
       expect(findReplayGuideIndex([], 250)).toBe(-1);
+    });
+  });
+
+  describe("hasReplayCoverage", () => {
+    const starts = [1_000, 11_000, 21_000];
+
+    it("找到与节目窗口相交的短分片", () => {
+      expect(hasReplayCoverage(starts, 10_000, 10_500, 10_800)).toBe(true);
+      expect(hasReplayCoverage(starts, 10_000, 20_500, 22_000)).toBe(true);
+    });
+
+    it("边界刚好相接不算相交", () => {
+      expect(hasReplayCoverage(starts, 10_000, 31_000, 40_000)).toBe(false);
+      expect(hasReplayCoverage(starts, 10_000, 0, 1_000)).toBe(false);
+    });
+
+    it("空覆盖和损坏时长安全返回 false", () => {
+      expect(hasReplayCoverage([], 10_000, 0, 1_000)).toBe(false);
+      expect(hasReplayCoverage(starts, 0, 0, 1_000)).toBe(false);
     });
   });
 });

@@ -38,3 +38,34 @@ export const findReplayGuideIndex = (
 
   return 0;
 };
+
+/**
+ * 已排序分片表与节目窗口是否相交。二分定位首个仍可能覆盖窗口的分片，避免
+ * 节目表每一行都从头扫描数万条短 HLS 分片。
+ */
+export const hasReplayCoverage = (
+  sortedStarts: ReadonlyArray<number>,
+  segmentDurationMs: number,
+  windowStart: number,
+  windowStop: number
+): boolean => {
+  if (
+    sortedStarts.length === 0 ||
+    !Number.isFinite(segmentDurationMs) ||
+    segmentDurationMs <= 0 ||
+    !Number.isFinite(windowStart) ||
+    !Number.isFinite(windowStop) ||
+    windowStop <= windowStart
+  ) {
+    return false;
+  }
+
+  let low = 0;
+  let high = sortedStarts.length;
+  while (low < high) {
+    const mid = low + Math.floor((high - low) / 2);
+    if (sortedStarts[mid] + segmentDurationMs <= windowStart) low = mid + 1;
+    else high = mid;
+  }
+  return low < sortedStarts.length && sortedStarts[low] < windowStop;
+};
