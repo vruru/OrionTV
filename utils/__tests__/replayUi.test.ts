@@ -1,12 +1,15 @@
 import {
   clampReplayPosition,
   DEFAULT_REPLAY_CONTROL_INDEX,
+  findReplayRateIndex,
   findReplayGuideIndex,
   getReplayLongSeekStep,
   getReplayPositionFromTrack,
   getReplayProgressPercent,
   hasReplayCoverage,
   moveReplayControlIndex,
+  moveReplayRateIndex,
+  REPLAY_PLAYBACK_RATES,
 } from "../replayUi";
 
 describe("replayUi", () => {
@@ -23,6 +26,27 @@ describe("replayUi", () => {
 
     it("损坏的光标值回退到暂停键", () => {
       expect(moveReplayControlIndex(Number.NaN, 1)).toBe(DEFAULT_REPLAY_CONTROL_INDEX);
+    });
+  });
+
+  describe("replay rate menu", () => {
+    it("提供完整且固定顺序的倍率选项", () => {
+      expect(REPLAY_PLAYBACK_RATES).toEqual([1, 1.25, 1.5, 2]);
+    });
+
+    it("按当前倍率定位选项，无效倍率回到 1 倍", () => {
+      expect(findReplayRateIndex(1)).toBe(0);
+      expect(findReplayRateIndex(1.5)).toBe(2);
+      expect(findReplayRateIndex(3)).toBe(0);
+      expect(findReplayRateIndex(Number.NaN)).toBe(0);
+    });
+
+    it("方向移动停在倍率列表首尾", () => {
+      expect(moveReplayRateIndex(0, 1)).toBe(1);
+      expect(moveReplayRateIndex(2, -1)).toBe(1);
+      expect(moveReplayRateIndex(0, -1)).toBe(0);
+      expect(moveReplayRateIndex(3, 1)).toBe(3);
+      expect(moveReplayRateIndex(Number.NaN, 1)).toBe(1);
     });
   });
 

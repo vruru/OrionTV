@@ -30,12 +30,15 @@ import { writeBreadcrumb } from "@/utils/crashReport";
 import {
   clampReplayPosition,
   DEFAULT_REPLAY_CONTROL_INDEX,
+  findReplayRateIndex,
   findReplayGuideIndex,
   getReplayLongSeekStep,
   getReplayPositionFromTrack,
   getReplayProgressPercent,
   hasReplayCoverage,
   moveReplayControlIndex,
+  moveReplayRateIndex,
+  REPLAY_PLAYBACK_RATES,
 } from "@/utils/replayUi";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
@@ -48,6 +51,7 @@ const REPLAY_SEEK_COMMIT_DELAY_MS = 450;
 const REPLAY_SEEK_HOLD_TICK_MS = 180;
 const REPLAY_SEEK_HOLD_WATCHDOG_MS = 12_000;
 const REPLAY_SEEK_END_GUARD_MS = 1_000;
+const REPLAY_RATE_MENU_OPTIONS = [...REPLAY_PLAYBACK_RATES].reverse();
 
 // 收藏分组的固定名称：有收藏时排在分组列表第一位
 const FAVORITES_GROUP = "我的收藏";
@@ -212,6 +216,16 @@ export default function LiveScreen() {
   replayProgressRef.current = replayProgress;
   const [replayPaused, setReplayPaused] = useState(false);
   const [replayRate, setReplayRate] = useState(1);
+  const replayRateRef = useRef(1);
+  replayRateRef.current = replayRate;
+  const replayDesiredRateRef = useRef(1);
+  const [replayRateMenuVisible, setReplayRateMenuVisible] = useState(false);
+  const [replayRateMenuIndex, setReplayRateMenuIndex] = useState(0);
+  const replayRateMenuVisibleRef = useRef(false);
+  replayRateMenuVisibleRef.current = replayRateMenuVisible;
+  const replayRateMenuIndexRef = useRef(0);
+  replayRateMenuIndexRef.current = replayRateMenuIndex;
+  const replayRateRequestTokenRef = useRef(0);
   const [replayControlIndex, setReplayControlIndex] = useState(DEFAULT_REPLAY_CONTROL_INDEX);
   // 控制条打开后默认选中时间轴：遥控左右键可直接定位；下键再进入原按钮区。
   const [replayTimelineSelected, setReplayTimelineSelected] = useState(true);
@@ -714,6 +728,7 @@ export default function LiveScreen() {
     if (replayTransitionBusyRef.current) return;
     replayTransitionBusyRef.current = true;
     cancelReplaySeekInteraction();
+    cancelReplayRateMenu();
     const token = replayTransitionTokenRef.current + 1;
     replayTransitionTokenRef.current = token;
     writeBreadcrumb("replay:manifestCheck");
@@ -741,10 +756,11 @@ export default function LiveScreen() {
       }
 
       writeBreadcrumb(`replay:manifestSafe${validation.maxSegmentDurationSeconds}s`);
+      replayRateRequestTokenRef.current += 1;
       await playerControlRef.current?.prepareForSourceChange();
       if (replayTransitionTokenRef.current !== token) {
         // 用户在旧播放器释放期间关闭了面板：让原直播 URL 重新挂载，不能留黑屏。
-        setRetryKey((key) => key + 1);
+        retryPlayback();
         return;
       }
 
@@ -758,6 +774,8 @@ export default function LiveScreen() {
         replayTimelineSelectedRef.current = true;
         setReplayTimelineSelected(true);
       }
+      replayRateRef.current = 1;
+      replayDesiredRateRef.current = 1;
       setReplayRate(1);
       replayProgressRef.current = { pos: 0, dur: 0 };
       setReplayProgress({ pos: 0, dur: 0 });
@@ -827,6 +845,89 @@ export default function LiveScreen() {
     setReplaySeekPreview(null);
   }
 
+  function cancelReplayRateMenu() {
+    replayRateMenuVisibleRef.current = false;
+    setReplayRateMenuVisible(false);
+  }
+
+  function resetReplayRateForSourceReload() {
+    replayRateRequestTokenRef.current += 1;
+    cancelReplayRateMenu();
+    replayRateRef.current = 1;
+    replayDesiredRateRef.current = 1;
+    setReplayRate(1);
+  }
+
+  function retryPlayback() {
+    resetReplayRateForSourceReload();
+    hideReplayControls();
+    setRetryKey((key) => key + 1);
+  }
+
+  function openReplayRateMenu() {
+    if (replayTransitionBusyRef.current || !replaySessionRef.current) return;
+    showReplayControls();
+    const index = findReplayRateIndex(replayRateRef.current);
+    replayRateMenuIndexRef.current = index;
+    setReplayRateMenuIndex(index);
+    replayRateMenuVisibleRef.current = true;
+    setReplayRateMenuVisible(true);
+    if (controlsHideTimer.current) {
+      clearTimeout(controlsHideTimer.current);
+      controlsHideTimer.current = null;
+    }
+  }
+
+  function closeReplayRateMenu() {
+    cancelReplayRateMenu();
+    armReplayControlsHideTimer();
+  }
+
+  function moveReplayRateMenu(delta: -1 | 1) {
+    const next = moveReplayRateIndex(replayRateMenuIndexRef.current, delta);
+    replayRateMenuIndexRef.current = next;
+    setReplayRateMenuIndex(next);
+  }
+
+  async function applyReplayRate(rate: number) {
+    if (!REPLAY_PLAYBACK_RATES.includes(rate)) return;
+    const sessionUrl = replaySessionRef.current?.url;
+    if (!sessionUrl) return;
+
+    closeReplayRateMenu();
+    if (rate === replayDesiredRateRef.current) return;
+    replayDesiredRateRef.current = rate;
+
+    const requestToken = replayRateRequestTokenRef.current + 1;
+    replayRateRequestTokenRef.current = requestToken;
+    const appliedRate = await playerControlRef.current?.setRate(rate);
+    if (
+      replayRateRequestTokenRef.current !== requestToken ||
+      replaySessionRef.current?.url !== sessionUrl
+    ) {
+      return;
+    }
+    if (appliedRate === null || appliedRate === undefined) {
+      const reportedRate = playerControlRef.current?.getStatusSnapshot()?.rate;
+      const confirmedRate =
+        reportedRate !== undefined && REPLAY_PLAYBACK_RATES.includes(reportedRate)
+          ? reportedRate
+          : replayRateRef.current;
+      replayRateRef.current = confirmedRate;
+      replayDesiredRateRef.current = confirmedRate;
+      setReplayRate(confirmedRate);
+      Toast.show({
+        type: "info",
+        text1: "倍率切换失败",
+        text2: "播放器尚未准备好，请稍后再试",
+      });
+      return;
+    }
+    replayRateRef.current = appliedRate;
+    replayDesiredRateRef.current = appliedRate;
+    setReplayRate(appliedRate);
+  }
+
   function armReplayControlsHideTimer() {
     if (controlsHideTimer.current) clearTimeout(controlsHideTimer.current);
     controlsHideTimer.current = null;
@@ -834,7 +935,8 @@ export default function LiveScreen() {
     if (
       !replayControlsRef.current ||
       replaySeekHoldDirectionRef.current !== 0 ||
-      replayTrackDraggingRef.current
+      replayTrackDraggingRef.current ||
+      replayRateMenuVisibleRef.current
     ) {
       return;
     }
@@ -849,6 +951,7 @@ export default function LiveScreen() {
       !replayTransitionBusyRef.current;
     replayControlsRef.current = false;
     setReplayControlsVisible(false);
+    cancelReplayRateMenu();
     replayTrackDraggingRef.current = false;
     if (shouldCommit) {
       clearReplaySeekTimers();
@@ -1064,6 +1167,7 @@ export default function LiveScreen() {
 
   const exitReplaySession = () => {
     if (!replaySessionRef.current) return;
+    resetReplayRateForSourceReload();
     const token = replayTransitionTokenRef.current + 1;
     replayTransitionTokenRef.current = token;
     replayTransitionBusyRef.current = true;
@@ -1129,9 +1233,7 @@ export default function LiveScreen() {
         stepReplayProgramme(1);
         break;
       case 5:
-        void playerControlRef.current?.cycleRate().then((rate) => {
-          if (rate) setReplayRate(rate);
-        });
+        openReplayRateMenu();
         break;
     }
   };
@@ -1221,6 +1323,10 @@ export default function LiveScreen() {
         return true;
       }
       if (replayControlsRef.current) {
+        if (replayRateMenuVisibleRef.current) {
+          closeReplayRateMenu();
+          return true;
+        }
         hideReplayControls(true);
         return true;
       }
@@ -1285,6 +1391,8 @@ export default function LiveScreen() {
       replayTransitionTokenRef.current += 1;
       replayTransitionBusyRef.current = false;
       replaySeekCommitTokenRef.current += 1;
+      replayRateRequestTokenRef.current += 1;
+      replayRateMenuVisibleRef.current = false;
       replaySeekInFlightRef.current = null;
       clearReplaySeekTimers();
       replaySeekPreviewRef.current = null;
@@ -1441,6 +1549,17 @@ export default function LiveScreen() {
       // 回看控制条由 JS 自管两个区域：默认时间轴可直接定位，下键进入原按钮区。
       // 两块都只是视觉 View，Android 原生焦点始终留在唯一播放器锚点。
       if (replayControlsRef.current) {
+        if (replayRateMenuVisibleRef.current) {
+          if (type === "up" || type === "right") moveReplayRateMenu(1);
+          else if (type === "down" || type === "left") moveReplayRateMenu(-1);
+          else if ((type === "select" || type === "playPause") && action !== 0) {
+            const rate = REPLAY_PLAYBACK_RATES[replayRateMenuIndexRef.current];
+            if (rate !== undefined) void applyReplayRate(rate);
+          } else if (type === "menu" || type === "contextMenu" || type === "back") {
+            closeReplayRateMenu();
+          }
+          return;
+        }
         if (replayTimelineSelectedRef.current) {
           if (type === "left" && action !== 0) nudgeReplayTimeline(-1);
           else if (type === "right" && action !== 0) nudgeReplayTimeline(1);
@@ -1538,7 +1657,7 @@ export default function LiveScreen() {
           }
         }
         else if ((type === "select" || type === "playPause") && playbackFailedRef.current) {
-          setRetryKey((k) => k + 1);
+          retryPlayback();
         }
         return;
       }
@@ -1685,7 +1804,7 @@ export default function LiveScreen() {
         <View style={styles.replayControls}>
           <View
             focusable={false}
-            accessible
+            accessible={!isTVDevice}
             accessibilityRole="adjustable"
             accessibilityLabel="回看进度"
             accessibilityValue={{
@@ -1701,8 +1820,8 @@ export default function LiveScreen() {
             onLayout={(event) => {
               replayProgressTrackWidthRef.current = event.nativeEvent.layout.width;
             }}
-            onStartShouldSetResponder={() => !isTVDevice}
-            onMoveShouldSetResponder={() => !isTVDevice}
+            onStartShouldSetResponder={() => !isTVDevice && !replayRateMenuVisibleRef.current}
+            onMoveShouldSetResponder={() => !isTVDevice && !replayRateMenuVisibleRef.current}
             onResponderGrant={(event) => beginReplayTrackInteraction(event.nativeEvent.locationX)}
             onResponderMove={(event) => previewReplayTrackPosition(event.nativeEvent.locationX)}
             onResponderRelease={finishReplayTrackInteraction}
@@ -1721,17 +1840,15 @@ export default function LiveScreen() {
           <Text style={styles.replayCtrlTime}>
             {`${replaySeekPreview !== null ? "定位至 " : ""}${formatMillis(replayDisplayPosition)} / ${formatMillis(replayProgress.dur)}`}
           </Text>
-          {isTVDevice && (
-            <Text style={styles.replayCtrlHint}>
-              {replayTimelineSelected
-                ? "左右键定位 · 长按快速移动 · 松开跳转 · 下键选择按钮"
-                : "左右键选择 · 长按快退/快进可连续定位 · 上键返回进度条"}
-            </Text>
-          )}
-          {!isTVDevice && (
-            <Text style={styles.replayCtrlHint}>拖动进度条直接跳转 · 长按快退/快进按钮连续定位</Text>
-          )}
           <View style={styles.replayCtrlRow}>
+            {replayRateMenuVisible && !isTVDevice && (
+              <Pressable
+                accessible={false}
+                focusable={false}
+                style={styles.replayRateMenuBackdrop}
+                onPress={closeReplayRateMenu}
+              />
+            )}
             <MediaButton
               tvManaged={isTVDevice}
               isSelected={isTVDevice && !replayTimelineSelected && replayControlIndex === 0}
@@ -1806,24 +1923,93 @@ export default function LiveScreen() {
             >
               <SkipForward color="white" size={22} />
             </MediaButton>
-            <MediaButton
-              tvManaged={isTVDevice}
-              isSelected={isTVDevice && !replayTimelineSelected && replayControlIndex === 5}
-              timeLabel={replayRate !== 1 ? `${replayRate}x` : undefined}
-              onPress={async () => {
-                showReplayControls();
-                const r = await playerControlRef.current?.cycleRate();
-                if (r) setReplayRate(r);
-              }}
-            >
-              <Gauge color="white" size={22} />
-            </MediaButton>
+            <View pointerEvents="box-none" style={styles.replayRateControlSlot}>
+              <MediaButton
+                tvManaged={isTVDevice}
+                isSelected={isTVDevice && !replayTimelineSelected && replayControlIndex === 5}
+                timeLabel={`${replayRate}x`}
+                onPress={() => {
+                  if (replayRateMenuVisibleRef.current) closeReplayRateMenu();
+                  else openReplayRateMenu();
+                }}
+              >
+                <Gauge color="white" size={22} />
+              </MediaButton>
+              {replayRateMenuVisible && (
+                <View
+                  style={[
+                    styles.replayRateMenu,
+                    isTVDevice && styles.replayRateMenuTV,
+                  ]}
+                >
+                  {REPLAY_RATE_MENU_OPTIONS.map((rate) => {
+                    const optionIndex = findReplayRateIndex(rate);
+                    const isCursor = optionIndex === replayRateMenuIndex;
+                    const isActive = rate === replayRate;
+                    const optionStyle = [
+                      styles.replayRateOption,
+                      isCursor && styles.replayRateOptionSelected,
+                    ];
+                    const optionContent = (
+                      <>
+                        <Text style={styles.replayRateOptionCheck}>{isActive ? "✓" : ""}</Text>
+                        <Text
+                          style={[
+                            styles.replayRateOptionText,
+                            isCursor && styles.replayRateOptionTextSelected,
+                          ]}
+                        >
+                          {`${rate} 倍`}
+                        </Text>
+                      </>
+                    );
+                    return isTVDevice ? (
+                      <View
+                        key={rate}
+                        focusable={false}
+                        accessible={false}
+                        style={optionStyle}
+                      >
+                        {optionContent}
+                      </View>
+                    ) : (
+                      <Pressable
+                        key={rate}
+                        focusable
+                        accessibilityRole="menuitem"
+                        accessibilityState={{ selected: isActive }}
+                        accessibilityLabel={`${rate} 倍`}
+                        style={optionStyle}
+                        onPress={() => void applyReplayRate(rate)}
+                      >
+                        {optionContent}
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              )}
+            </View>
           </View>
+          {isTVDevice ? (
+            <Text style={styles.replayCtrlHint}>
+              {replayRateMenuVisible
+                ? "上下键选择倍率 · 确认键应用 · 返回键关闭"
+                : replayTimelineSelected
+                  ? "左右键定位 · 长按快速移动 · 松开跳转 · 下键选择按钮"
+                  : "左右键选择 · 长按快退/快进可连续定位 · 上键返回进度条"}
+            </Text>
+          ) : (
+            <Text style={styles.replayCtrlHint}>
+              {replayRateMenuVisible
+                ? "点选需要的播放倍率"
+                : "拖动进度条直接跳转 · 长按快退/快进按钮连续定位"}
+            </Text>
+          )}
         </View>
       )}
       {/* 移动端/平板：加载失败时点按重试（TV 端走确认键） */}
       {playbackFailed && !isTVDevice && (
-        <Pressable style={styles.retryTouchOverlay} onPress={() => setRetryKey((k) => k + 1)} />
+        <Pressable style={styles.retryTouchOverlay} onPress={retryPlayback} />
       )}
       {isLoading && channels.length === 0 && (
         <View style={styles.centerOverlay} pointerEvents="none">
@@ -2189,12 +2375,9 @@ const styles = StyleSheet.create({
   replayCtrlProgressHitArea: {
     height: 28,
     borderRadius: 10,
-    borderWidth: 2,
-    borderColor: "transparent",
     justifyContent: "center",
   },
   replayCtrlProgressSelected: {
-    borderColor: "#9ec9ff",
     backgroundColor: "rgba(158, 201, 255, 0.14)",
   },
   replayCtrlProgressBg: {
@@ -2228,15 +2411,70 @@ const styles = StyleSheet.create({
   replayCtrlHint: {
     color: "#aaa",
     fontSize: 11,
-    marginTop: 3,
+    marginTop: 8,
     textAlign: "center",
   },
   replayCtrlRow: {
     flexDirection: "row",
     justifyContent: "center",
+    alignItems: "flex-end",
     gap: 10,
     marginTop: 8,
     flexWrap: "wrap",
+  },
+  replayRateControlSlot: {
+    position: "relative",
+    flexDirection: "column-reverse",
+    alignItems: "flex-end",
+    zIndex: 20,
+  },
+  replayRateMenuBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 10,
+  },
+  replayRateMenu: {
+    width: 126,
+    marginBottom: 10,
+    padding: 6,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(158, 201, 255, 0.5)",
+    backgroundColor: "rgba(15, 18, 24, 0.97)",
+    elevation: 12,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.45,
+    shadowRadius: 10,
+  },
+  replayRateMenuTV: {
+    position: "absolute",
+    right: 0,
+    bottom: 62,
+    marginBottom: 0,
+  },
+  replayRateOption: {
+    height: 44,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  replayRateOptionSelected: {
+    backgroundColor: "rgba(158, 201, 255, 0.24)",
+  },
+  replayRateOptionCheck: {
+    width: 22,
+    color: "#9ec9ff",
+    fontSize: 14,
+    fontWeight: "bold",
+  },
+  replayRateOptionText: {
+    color: "#ddd",
+    fontSize: 13,
+  },
+  replayRateOptionTextSelected: {
+    color: "#fff",
+    fontWeight: "bold",
   },
   badgeSlotLeft: {
     width: 40,

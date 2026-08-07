@@ -1,5 +1,6 @@
 export const REPLAY_CONTROL_COUNT = 6;
 export const DEFAULT_REPLAY_CONTROL_INDEX = 2;
+export const REPLAY_PLAYBACK_RATES: ReadonlyArray<number> = [1, 1.25, 1.5, 2];
 
 /**
  * TV 回看控制条使用 JS 自管光标，原生焦点始终留在播放器锚点上。
@@ -8,6 +9,22 @@ export const DEFAULT_REPLAY_CONTROL_INDEX = 2;
 export const moveReplayControlIndex = (current: number, delta: number): number => {
   if (!Number.isFinite(current)) return DEFAULT_REPLAY_CONTROL_INDEX;
   return Math.max(0, Math.min(REPLAY_CONTROL_COUNT - 1, current + delta));
+};
+
+/** 返回倍率选择框中与当前倍率对应的安全下标。 */
+export const findReplayRateIndex = (rate: number): number => {
+  const index = REPLAY_PLAYBACK_RATES.indexOf(rate);
+  return index >= 0 ? index : 0;
+};
+
+/** TV 倍率选择框按方向键移动，光标停在首尾而不循环。 */
+export const moveReplayRateIndex = (current: number, delta: number): number => {
+  const safeCurrent = Number.isInteger(current) ? current : 0;
+  const safeDelta = Number.isInteger(delta) ? delta : 0;
+  return Math.max(
+    0,
+    Math.min(REPLAY_PLAYBACK_RATES.length - 1, safeCurrent + safeDelta)
+  );
 };
 
 /**
