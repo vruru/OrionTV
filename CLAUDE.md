@@ -147,4 +147,4 @@ Do what has been asked; nothing more, nothing less.
 NEVER create files unless they're absolutely necessary for achieving your goal.
 ALWAYS prefer editing an existing file to creating a new one.
 NEVER proactively create documentation files (\*.md) or README files. Only create documentation files if explicitly requested by the User.
-ALWAYS When plan mode switches to edit, the contents of plan and todo need to be output as a document.
+Keep plans and todos in their existing location when moving from planning to implementation. Create a separate plan document only when the user requests one; a mode switch alone does not require a new document.
