@@ -4,18 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-OrionTV is a React Native TVOS application for streaming video content, built with Expo and designed specifically for TV platforms (Apple TV and Android TV). This is a frontend-only application that connects to external APIs and includes a built-in remote control server for external device control.
+OrionTV is a TV-first React Native TVOS streaming client built with Expo, with responsive mobile and tablet components. This single-package application connects to external MoonTV/LunaTV-compatible APIs and optionally serves a LAN remote-input page. This repository does not include the content backend or NAS replay recorder. See [README.md](README.md) for current setup, build, and release instructions, and [docs/MOBILE_TABLET_ADAPTATION.md](docs/MOBILE_TABLET_ADAPTATION.md) for the historical adaptation plan and current implementation notes.
 
 ## Key Commands
 
 ### Development Commands
 
 #### TV Development (Apple TV & Android TV)
-- `yarn start` - Start Metro bundler in TV mode (EXPO_TV=1)
+- `yarn start` - Start Metro bundler in TV mode (the script sets `EXPO_TV`)
 - `yarn android` - Build and run on Android TV
 - `yarn ios` - Build and run on Apple TV
-- `yarn prebuild` - Generate native project files for TV (run after dependency changes)
-- `yarn build` - Build Android APK for TV release
+- `yarn prebuild` - Clean and regenerate native project files for TV, then copy `xml/*` into Android sources; preserve any manual native edits first
+- `yarn build` - Existing Android release entry point; it repeats prebuild and does not run the OTA manifest repair
 
 #### Testing Commands
 - `yarn test` - Run Jest tests with watch mode
@@ -25,40 +25,49 @@ OrionTV is a React Native TVOS application for streaming video content, built wi
 - `yarn typecheck` - Run TypeScript type checking
 
 #### Build and Deployment
-- `yarn copy-config` - Copy TV-specific Android configurations
-- `yarn build-debug` - Build Android APK for debugging
+- `yarn copy-config` - Copy `xml/*` into Android sources (the manifest template disables Expo Updates)
+- `node scripts/ensure-updates-manifest.js` - Repair Android Updates metadata from `app.json` after prebuild/copy-config
+- `./gradlew assembleRelease` (inside generated `android/`) - Build after the repair without repeating prebuild; follow the [APK workflow](.github/workflows/build-apk.yml)
+- `yarn build-debug` - Build Android APK for debugging; requires generated Android sources
 - `yarn clean` - Clean cache and build artifacts
 - `yarn clean-modules` - Reinstall all node modules
+
+The [APK workflow](.github/workflows/build-apk.yml) is manually triggered and publishes a GitHub Release. The [OTA workflow](.github/workflows/eas-update.yml) publishes to the production channel on eligible `master` pushes; Markdown-only changes are ignored. Native/configuration changes require a new client build. EAS TV profiles are defined in [eas.json](eas.json); verify the final Android manifest when using cloud builds, which do not run the APK workflow's repair and validation steps.
 
 ## Architecture Overview
 
 ### Multi-Platform Responsive Design
 
-OrionTV implements a sophisticated responsive architecture supporting multiple device types:
-- **Device Detection**: Width-based breakpoints (mobile <768px, tablet 768-1023px, TV ≥1024px)
-- **Component Variants**: Platform-specific files with `.tv.tsx`, `.mobile.tsx`, `.tablet.tsx` extensions
-- **Responsive Utilities**: `DeviceUtils` and `ResponsiveStyles` for adaptive layouts and scaling
-- **Adaptive Navigation**: Different interaction patterns per device type (touch vs remote control)
+The responsive implementation uses the following entry points:
+- **Device Detection**: `hooks/useResponsiveLayout.ts` checks `Platform.isTV` first, then window-width breakpoints (mobile <768, tablet 768–1023, TV ≥1024). Its default grids use 3 portrait / 4 landscape columns on mobile and tablet, and 5 on TV. `DeviceUtils.getDeviceType()` checks width only; do not assume the two always agree.
+- **Component Variants**: `components/VideoCard.tsx` explicitly imports and selects `.mobile.tsx`, `.tablet.tsx`, and `.tv.tsx` implementations. The TV-extension resolver example in `metro.config.js` is commented out.
+- **Responsive Utilities**: `DeviceUtils` and `ResponsiveStyles` provide adaptive layout and scaling helpers.
+- **Adaptive Navigation**: The root layout uses Expo Router Stack. Pages using `components/navigation/ResponsiveNavigation.tsx` receive mobile bottom navigation or a tablet sidebar; TV renders the page content directly.
+- **Metro Scope**: `metro.config.js` watches the directory two levels above the project and resolves dependencies from that directory and the project. The repository itself contains one application package.
 
 ### State Management Architecture (Zustand)
 
 Domain-specific stores with consistent patterns:
-- **homeStore.ts** - Home screen content, categories, Douban API data, and play records
+- **homeStore.ts** - Home screen content, categories, Douban/Bangumi API data, and play records
 - **playerStore.ts** - Video player state, controls, and episode management  
 - **settingsStore.ts** - App settings, API configuration, and user preferences
 - **remoteControlStore.ts** - Remote control server functionality and HTTP bridge
 - **authStore.ts** - User authentication state
 - **updateStore.ts** - Automatic update checking and version management
-- **favoritesStore.ts** - User favorites management
+- **favoritesStore.ts** - On-demand video favorites management
+- **liveFavoritesStore.ts** - Live-channel favorites persisted locally
 
 ### Service Layer Pattern
 
 Clean separation of concerns across service modules:
 - **api.ts** - External API integration with error handling and caching
-- **storage.ts** - AsyncStorage wrapper with typed interfaces
-- **remoteControlService.ts** - TCP-based HTTP server for external device control
+- **storage.ts** - App settings in AsyncStorage; on-demand favorites, play records, and search history use local storage or API according to the backend's `StorageType`
+- **remoteControlService.ts** - LAN remote-input page with WebSocket transport and HTTP POST fallback
 - **updateService.ts** - Automatic version checking and APK download management
-- **tcpHttpServer.ts** - Low-level TCP server implementation
+- **tcpHttpServer.ts** / **webSocketProtocol.ts** - TCP HTTP server on port 12346 and WebSocket protocol handling
+- **m3u.ts** / **epg.ts** - Live playlist parsing and XMLTV programme data
+- **replay.ts** - External NAS replay client, recording coverage and HLS manifest validation
+- **thumbnailGen.ts** / **speedTest.ts** - Playback previews and source throughput measurements
 
 ### TV Remote Control System
 
@@ -84,29 +93,31 @@ Sophisticated TV interaction handling:
 This project uses a TV-first approach with responsive adaptations:
 - **Primary Target**: Apple TV and Android TV with remote control interaction
 - **Secondary Targets**: Mobile and tablet with touch-optimized responsive design
-- **Build Environment**: `EXPO_TV=1` environment variable enables TV-specific features
-- **Component Strategy**: Shared components with platform-specific variants using file extensions
+- **Build Environment**: Existing start/run/prebuild scripts and TV EAS profiles set `EXPO_TV`; no separate mobile/tablet scripts are currently defined
+- **Component Strategy**: Shared components with explicitly imported device-specific variants
 
 ### Testing Strategy
 
-- **Unit Tests**: Comprehensive test coverage for utilities (`utils/__tests__/`)
+- **Unit Tests**: Existing tests under `components/__tests__/`, `services/__tests__/`, `stores/__tests__/`, and `utils/__tests__/`; the adaptation document's coverage and device targets are planning goals
 - **Jest Configuration**: Expo preset with Babel transpilation
 - **Test Patterns**: Mock-based testing for React Native modules and external dependencies
 - **Coverage Reporting**: CI-compatible coverage reports with detailed metrics
 
 ### Important Development Notes
 
-- Run `yarn prebuild` after adding new dependencies for native builds
-- Use `yarn copy-config` to apply TV-specific Android configurations
+- Run `yarn prebuild` after native dependency/configuration changes; it cleans generated native directories and already runs `yarn copy-config`
+- For Android releases with OTA, repair the manifest after prebuild/copy-config, then run Gradle directly; repeating those copy steps requires another repair
 - TV components require focus management and remote control support
 - Test on both TV devices (Apple TV/Android TV) and responsive mobile/tablet layouts
-- All API calls are centralized in `/services` directory with error handling
-- Storage operations use AsyncStorage wrapper in `storage.ts` with typed interfaces
+- Backend content API calls are centralized in `services/api.ts`; EPG, replay and update services handle their own external endpoints
+- Storage managers in `services/storage.ts` select AsyncStorage or backend API as described above; live favorites use local AsyncStorage
+- Configure the API base URL in the app's settings, not through `.env`; required build/CI variable names are documented in README
+- Remote input runs only on non-mobile layouts when enabled; `SettingsManager` defaults it to enabled when no saved configuration exists
 
 ### Component Development Patterns
 
-- **Platform Variants**: Use `.tv.tsx`, `.mobile.tsx`, `.tablet.tsx` for platform-specific implementations
-- **Responsive Utilities**: Leverage `DeviceUtils.getDeviceType()` for responsive logic
+- **Device Variants**: Follow `components/VideoCard.tsx` and explicitly select `.tv.tsx`, `.mobile.tsx`, `.tablet.tsx` implementations
+- **Responsive Utilities**: Follow `useResponsiveLayout` for reactive layout and TV detection; account for the width-only behavior of `DeviceUtils.getDeviceType()`
 - **TV Remote Handling**: Use `useTVRemoteHandler` hook for TV-specific interactions
 - **Focus Management**: TV components must handle focus states for remote navigation
 - **Shared Logic**: Place common logic in `/hooks` directory for reusability

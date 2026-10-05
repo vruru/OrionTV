@@ -1,10 +1,21 @@
 # OrionTV 手机端和平板端适配方案
 
+## 阅读说明与当前实现
+
+本文保留最初的适配规划。下方的阶段、时间表、手势、画中画、测试设备范围和成功指标均为设计目标，不代表当前版本已完成验收。安装、运行和发布请以 [README](../README.md) 与 [package.json](../package.json) 为准。
+
+当前已有响应式布局、卡片变体和导航：
+
+- `hooks/useResponsiveLayout.ts` 优先识别 `Platform.isTV`，再按窗口宽度划分手机（<768）、平板（768–1023）和 TV（≥1024）。手机／平板默认竖屏 3 列、横屏 4 列，TV 为 5 列；`DeviceUtils.getDeviceType()` 仅按宽度判断。
+- `components/VideoCard.tsx` 显式导入三个卡片变体并选择渲染。`metro.config.js` 中 TV 后缀自动解析的示例尚未启用。
+- 根布局仍使用 Stack；页面中的 `ResponsiveNavigation` 为手机提供底部导航、为平板提供侧栏，TV 直接渲染页面内容。
+- 当前开发脚本默认启用 TV 模式，没有单独的手机／平板脚本。阶段 6 的构建建议不是现行命令。
+
 ## 项目概述
 
-OrionTV 是一个基于 React Native TVOS 的视频流媒体应用，目前专为 Android TV 和 Apple TV 平台设计。本文档详细描述了将应用适配到 Android 手机和平板设备的完整方案。
+OrionTV 是一个基于 React Native TVOS 的视频流媒体客户端，以 Android TV 和 Apple TV 为主要构建目标。本文记录手机和平板适配的设计方案，现有实现摘要见上方说明。
 
-## 当前状态分析
+## 初始 TV 基线（规划背景）
 
 ### TV端特征
 - **技术栈**: React Native TVOS 0.74.x + Expo 51
@@ -14,7 +25,10 @@ OrionTV 是一个基于 React Native TVOS 的视频流媒体应用，目前专�
 - **组件**: TV专用组件 (`VideoCard.tv.tsx`)
 - **UI元素**: 大间距、大按钮，适合10英尺距离观看
 
-### 现有页面结构
+### 页面入口与初始布局
+
+以下均为 `app/` 下的页面；列数和交互描述为规划时的 TV 基线，现有响应式布局见开头说明。
+
 1. **index.tsx** - 首页：分类选择 + 5列视频网格
 2. **detail.tsx** - 详情页：横向布局，海报+信息+播放源
 3. **search.tsx** - 搜索页：搜索框 + 5列结果网格
@@ -28,8 +42,8 @@ OrionTV 是一个基于 React Native TVOS 的视频流媒体应用，目前专�
 
 ### 设备分类
 - **手机端** (< 768px): 单手操作，纵向为主，触摸交互
-- **平板端** (768px - 1024px): 双手操作，横竖屏，触摸+键盘
-- **TV端** (> 1024px): 遥控器操作，横屏，10英尺距离
+- **平板端** (768px - 1023px): 双手操作，横竖屏，触摸+键盘
+- **TV端** (≥ 1024px，或 `Platform.isTV`): 遥控器操作，横屏，10英尺距离
 
 ### 响应式设计原则
 1. **内容优先**: 保持核心功能一致性
@@ -54,10 +68,10 @@ export interface ResponsiveConfig {
 }
 ```
 
-#### 1.2 设备检测逻辑
+#### 1.2 设备检测逻辑（当前实现）
 - 基于 `Dimensions.get('window')` 获取屏幕尺寸
-- 监听方向变化 `useDeviceOrientation()`
-- 平台检测 `Platform.OS` 和 TV 环境变量
+- 监听 `Dimensions` 的 `change` 事件并根据宽高判断横竖屏
+- `useResponsiveLayout` 优先检测 `Platform.isTV`，再使用宽度断点；`DeviceUtils.getDeviceType()` 只使用宽度断点
 
 #### 1.3 断点定义
 ```typescript
@@ -76,8 +90,11 @@ const BREAKPOINTS = {
 - **VideoCard.tv.tsx**: 保持现有实现
 
 #### 2.2 组件选择器
+
+实际入口为 `components/VideoCard.tsx`；以下为选择逻辑示意，完整 props、ref 和导入见源码。
+
 ```typescript
-// components/VideoCard/index.tsx
+// components/VideoCard.tsx
 export const VideoCard = (props) => {
   const { deviceType } = useResponsiveLayout();
   
@@ -199,20 +216,15 @@ export const VideoCard = (props) => {
 
 ### 阶段6: 构建和部署
 
-#### 6.1 构建脚本更新
-```json
-{
-  "scripts": {
-    "android-mobile": "EXPO_USE_METRO_WORKSPACE_ROOT=1 expo run:android",
-    "android-tablet": "EXPO_USE_METRO_WORKSPACE_ROOT=1 expo run:android --device tablet",
-    "android-tv": "EXPO_TV=1 EXPO_USE_METRO_WORKSPACE_ROOT=1 expo run:android"
-  }
-}
-```
+#### 6.1 构建脚本现状与后续建议
+
+当前 `package.json` 的 `start`、`android`、`ios` 和 `prebuild` 脚本默认启用 TV 模式，构建参数由 `EXPO_TV` 和 `EXPO_USE_METRO_WORKSPACE_ROOT` 控制。这里原先提议的 `android-mobile`、`android-tablet`、`android-tv` 脚本未加入仓库；如后续需要独立移动端构建，须另行实现并验证。
+
+现行安装与运行命令、Android OTA 清单修复顺序及发布入口见 [README](../README.md)。
 
 #### 6.2 配置文件适配
 - **app.json**: 多平台配置
-- **metro.config.js**: 条件资源加载
+- **metro.config.js**: 当前监视与模块解析配置；TV 后缀自动解析示例仍为注释
 - **package.json**: 平台特定依赖
 
 #### 6.3 资源文件
@@ -221,7 +233,7 @@ export const VideoCard = (props) => {
 - 启动屏适配不同分辨率
 - 自适应图标 (Adaptive Icons)
 
-## 测试计划
+## 测试计划（规划范围，非已验证兼容性）
 
 ### 测试设备覆盖
 - **手机**: Android 5.0-14, 屏幕 4"-7"
@@ -253,7 +265,7 @@ export const VideoCard = (props) => {
 - 自动化测试保证质量
 - 代码复用最大化
 
-## 实施时间表
+## 原始实施时间表（历史规划，非当前进度）
 
 ### 第1周: 基础架构
 - [ ] 响应式Hook开发
@@ -293,16 +305,14 @@ export const VideoCard = (props) => {
 
 ## 附录
 
-### 参考资料
-- [React Native 响应式设计指南]
-- [Material Design 自适应布局]
-- [TV应用设计最佳实践]
-
 ### 相关文档
-- 项目架构文档 (CLAUDE.md)
-- TV端开发指南
-- 组件库使用手册
+
+- [项目运行与发布说明](../README.md)
+- [英文开发约定与架构说明](../CLAUDE.md)
+- [响应式布局实现](../hooks/useResponsiveLayout.ts)
+- [导航容器实现](../components/navigation/ResponsiveNavigation.tsx)
+- [卡片选择器实现](../components/VideoCard.tsx)
 
 ---
-*最后更新: 2025-08-01*
-*版本: 1.0*
+*原始规划: 2025-08-01*
+*现状与引用核对: 2026-10-05*
