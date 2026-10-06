@@ -2,6 +2,7 @@ import { Dimensions } from "react-native";
 import { DeviceUtils } from "../DeviceUtils";
 
 jest.mock("react-native", () => ({
+  Platform: { isTV: false },
   Dimensions: {
     get: jest.fn(),
   },

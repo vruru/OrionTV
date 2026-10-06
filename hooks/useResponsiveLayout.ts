@@ -20,7 +20,7 @@ const BREAKPOINTS = {
   tv: { min: 1024, max: Infinity },
 };
 
-const getDeviceType = (width: number): DeviceType => {
+export const getDeviceType = (width: number): DeviceType => {
   if (Platform.isTV) return "tv";
 
   if (width >= BREAKPOINTS.tv.min) return "tv";

@@ -11,7 +11,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const ROOT = path.resolve(__dirname, "..");
+const ROOT = path.resolve(process.argv[2] || path.join(__dirname, ".."));
 const MANIFEST = path.join(ROOT, "android/app/src/main/AndroidManifest.xml");
 const STRINGS = path.join(ROOT, "android/app/src/main/res/values/strings.xml");
 

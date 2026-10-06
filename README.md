@@ -18,7 +18,7 @@ OrionTV 是一个以电视体验为主的视频点播和直播客户端，使用
 
 页面通过 Zustand stores 管理业务状态，调用 `services/` 中的 API、播放辅助和存储服务。`settingsStore` 加载设置、配置 API 基址并读取 `/api/server-config`；点播收藏、播放记录和搜索历史根据后端返回的 `StorageType` 使用本地 AsyncStorage 或后端 API，直播频道收藏始终保存在本地。根布局负责字体、设置、登录检查、远程输入服务和 Android APK 更新检查。
 
-`useResponsiveLayout` 优先识别 `Platform.isTV`，再按窗口宽度选择手机、平板或 TV 布局；手机／平板默认竖屏 3 列、横屏 4 列，TV 默认 5 列。`VideoCard.tsx` 显式选择三个组件变体，`ResponsiveNavigation` 在使用它的页面提供底部导航或侧栏，根路由仍为 Stack。`DeviceUtils.getDeviceType()` 仅按宽度判断，与该 hook 的 TV 判断存在差异。
+`useResponsiveLayout` 优先识别 `Platform.isTV`，再按窗口宽度选择手机、平板或 TV 布局；手机／平板默认竖屏 3 列、横屏 4 列，TV 默认 5 列。`VideoCard.tsx` 显式选择三个组件变体，`ResponsiveNavigation` 在使用它的页面提供底部导航或侧栏，根路由仍为 Stack。`DeviceUtils.getDeviceType()` 复用该 hook 的判断，窄分辨率 TV 同样优先由 `Platform.isTV` 识别。
 
 ```text
 app/          Expo Router 页面：主页、搜索、详情、点播、直播、收藏、设置
@@ -35,7 +35,7 @@ docs/         手机／平板适配方案
 .github/      PR 检查、APK 发布和 EAS OTA 工作流
 ```
 
-`metro.config.js` 监视仓库上两级目录，并从项目与上两级目录的 `node_modules` 解析依赖；这不代表仓库本身含有多个 workspace 包。TV 文件后缀自动解析的示例目前处于注释状态，卡片变体通过显式导入选择。
+`metro.config.js` 只从本项目的 `node_modules` 解析锁定依赖，不监视仓库上级目录。TV 文件后缀自动解析的示例目前处于注释状态，卡片变体通过显式导入选择。
 
 ## 环境准备
 
@@ -97,7 +97,7 @@ cd android
 cd ..
 ```
 
-`xml/AndroidManifest.xml` 中的模板禁用了 Expo Updates，而 `prebuild` 会复制它。因此，保留 OTA 能力的 Android 包必须在复制配置后执行 `ensure-updates-manifest.js`，从 `app.json` 补全启用状态、更新 URL、运行时版本及 channel 请求头。修复后直接运行 Gradle；如果再次运行 `yarn prebuild`、`yarn copy-config` 或包含 prebuild 的 `yarn build`，需要重新修复清单。
+`xml/AndroidManifest.xml` 中的模板禁用了 Expo Updates，而 `prebuild` 会复制它。因此，保留 OTA 能力的 Android 包必须在复制配置后执行 `ensure-updates-manifest.js`，从 `app.json` 补全启用状态、更新 URL、运行时版本及 channel 请求头。修复后直接运行 Gradle；如果再次运行 `yarn prebuild`、`yarn copy-config`，需要重新修复清单。`yarn build` 在 prebuild/copy-config 后自动修复再调用 Gradle；`yarn build-debug` 也在 Gradle 前修复。
 
 Release APK 位于 `android/app/build/outputs/apk/release/app-release.apk`。可在连接设备后安装：
 
@@ -107,7 +107,7 @@ adb install -r android/app/build/outputs/apk/release/app-release.apk
 
 发布前使用 Android SDK 的 `aapt dump xmltree` 检查该 APK 的 `AndroidManifest.xml`，确认 Updates 已启用且包含更新 URL、运行时版本和请求头元数据。CI 对这三类元数据缺失会直接报错。
 
-调试包入口为 `yarn build-debug`，要求已生成 `android/`，产物位于 `android/app/build/outputs/apk/debug/app-debug.apk`。`yarn build` 是现有的一步 Release 构建脚本，但未调用 OTA 清单修复；需要 OTA 的发布包使用上面的分步流程。
+调试包入口为 `yarn build-debug`，要求已生成 `android/`，产物位于 `android/app/build/outputs/apk/debug/app-debug.apk`。`yarn build` 是一步 Release 构建入口，自动按上述顺序修复清单。临时目录回归测试覆盖重复 prebuild/copy-config 后修复、元数据唯一性及版本/channel；最终 APK 和设备更新仍须按上述方式验收。
 
 ## 发布与更新
 
